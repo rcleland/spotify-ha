@@ -69,12 +69,6 @@ export class SpotifySpotlightCardEditor extends LitElement {
       return html`<div class="card-config">Loading…</div>`;
     }
 
-    const pl =
-      this._config.playlist_limit !== undefined &&
-      Number.isFinite(this._config.playlist_limit)
-        ? String(this._config.playlist_limit)
-        : "24";
-
     const poll =
       typeof this._config.poll_interval_seconds === "number" &&
       Number.isFinite(this._config.poll_interval_seconds)
@@ -121,16 +115,6 @@ export class SpotifySpotlightCardEditor extends LitElement {
         </div>
 
         <ha-textfield
-          label="Max playlist chips"
-          type="number"
-          inputMode="numeric"
-          min="1"
-          max="500"
-          .value=${pl}
-          @input=${this._playlistLimitChanged}
-        ></ha-textfield>
-
-        <ha-textfield
           label="Refresh interval (seconds)"
           type="number"
           inputMode="numeric"
@@ -150,17 +134,12 @@ export class SpotifySpotlightCardEditor extends LitElement {
           ></ha-switch>
         </ha-formfield>
 
-        <ha-formfield label="Show playlist chips">
+        <ha-formfield
+          label="Show “Media library” button (opens HA Media panel for this player)"
+        >
           <ha-switch
-            .checked=${this._config.show_playlists !== false}
-            @change=${this._showPlaylistsChanged}
-          ></ha-switch>
-        </ha-formfield>
-
-        <ha-formfield label="Show media library (Playlists, Artists, Albums, …)">
-          <ha-switch
-            .checked=${this._config.show_media_library !== false}
-            @change=${this._showLibraryChanged}
+            .checked=${this._config.show_browse_media_button !== false}
+            @change=${this._browseButtonChanged}
           ></ha-switch>
         </ha-formfield>
 
@@ -184,7 +163,6 @@ export class SpotifySpotlightCardEditor extends LitElement {
     );
   }
 
-  /** Normalize partial editor state into a full card config (YAML-safe). */
   private _normalized(): SpotifySpotlightCardConfig {
     const c = this._config;
     const pollRaw = c.poll_interval_seconds;
@@ -203,15 +181,8 @@ export class SpotifySpotlightCardEditor extends LitElement {
       entity: typeof c.entity === "string" ? c.entity : "",
       tall: c.tall !== false,
       name: typeof c.name === "string" && c.name.trim() ? c.name.trim() : undefined,
-      playlist_limit:
-        typeof c.playlist_limit === "number" &&
-        Number.isFinite(c.playlist_limit) &&
-        c.playlist_limit >= 1
-          ? Math.min(500, Math.floor(c.playlist_limit))
-          : undefined,
       show_up_next: c.show_up_next !== false,
-      show_playlists: c.show_playlists !== false,
-      show_media_library: c.show_media_library !== false,
+      show_browse_media_button: c.show_browse_media_button !== false,
       cover_align:
         c.cover_align === "left" ||
         c.cover_align === "center" ||
@@ -251,16 +222,6 @@ export class SpotifySpotlightCardEditor extends LitElement {
     });
   }
 
-  private _playlistLimitChanged(ev: Event): void {
-    const t = ev.target as unknown as HTMLInputElement;
-    const n = parseInt(t.value, 10);
-    if (!Number.isFinite(n) || n < 1) {
-      this._merge({ playlist_limit: undefined });
-      return;
-    }
-    this._merge({ playlist_limit: Math.min(500, n) });
-  }
-
   private _pollChanged(ev: Event): void {
     const t = ev.target as unknown as HTMLInputElement;
     const n = parseInt(t.value, 10);
@@ -276,14 +237,9 @@ export class SpotifySpotlightCardEditor extends LitElement {
     this._merge({ tall: el.checked });
   }
 
-  private _showPlaylistsChanged(ev: Event): void {
+  private _browseButtonChanged(ev: Event): void {
     const el = ev.currentTarget as HTMLElement & { checked: boolean };
-    this._merge({ show_playlists: el.checked });
-  }
-
-  private _showLibraryChanged(ev: Event): void {
-    const el = ev.currentTarget as HTMLElement & { checked: boolean };
-    this._merge({ show_media_library: el.checked });
+    this._merge({ show_browse_media_button: el.checked });
   }
 
   private _upNextChanged(ev: Event): void {

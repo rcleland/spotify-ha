@@ -1,5 +1,5 @@
 /**
- * Spotify Spotlight — Lovelace card with blurred artwork, transport, volume, playlists.
+ * Spotify Spotlight — Lovelace card with blurred artwork, transport, volume, and optional link to HA Media panel.
  */
 import {
   css,
@@ -35,7 +35,6 @@ interface HassEntity {
 
 interface HomeAssistant {
   states: Record<string, HassEntity>;
-  callWS(msg: Record<string, unknown>): Promise<unknown>;
   callService(
     domain: string,
     service: string,
@@ -43,41 +42,22 @@ interface HomeAssistant {
   ): Promise<void>;
 }
 
-interface BrowseMedia {
-  title: string;
-  media_class?: string;
-  media_content_type?: string | null;
-  media_content_id?: string | null;
-  thumbnail?: string | null;
-  children?: BrowseMedia[];
-  can_play?: boolean;
-  can_expand?: boolean;
-}
+/** Same as Home Assistant `MediaPlayerEntityFeature.BROWSE_MEDIA` */
+const MEDIA_PLAYER_FEATURE_BROWSE_MEDIA = 1 << 17;
 
-function formatHassError(err: unknown): string {
-  if (err instanceof Error) {
-    return err.message;
+/** Navigate like `navigate()` in HA frontend (opens Media panel for entity). */
+function navigateFrontend(path: string): void {
+  if (typeof window === "undefined") {
+    return;
   }
-  if (typeof err === "object" && err !== null) {
-    const o = err as Record<string, unknown>;
-    if (typeof o.message === "string") {
-      return o.message;
-    }
-    if (typeof o.reason === "string") {
-      return o.reason;
-    }
-    try {
-      return JSON.stringify(o);
-    } catch {
-      return "Unknown error";
-    }
-  }
-  return String(err);
-}
-
-function safeTitle(m: BrowseMedia): string {
-  const t = m.title;
-  return typeof t === "string" ? t : "";
+  window.history.pushState(null, "", path);
+  window.dispatchEvent(
+    new CustomEvent("location-changed", {
+      bubbles: true,
+      composed: true,
+      detail: { replace: false },
+    }),
+  );
 }
 
 window.customCards = window.customCards ?? [];
@@ -85,7 +65,7 @@ window.customCards.push({
   type: "spotify-spotlight-card",
   name: "Spotify Spotlight",
   description:
-    "Spotify controls with blurred artwork, volume, playlists, and up next",
+    "Spotify controls with blurred artwork, volume, up next, and Media panel link",
   preview: true,
 });
 
@@ -97,8 +77,7 @@ export class SpotifySpotlightCard extends LitElement {
       entity: "",
       tall: true,
       show_up_next: true,
-      show_playlists: true,
-      show_media_library: true,
+      show_browse_media_button: true,
       cover_align: "center",
       poll_interval_seconds: 5,
     };
@@ -128,15 +107,6 @@ export class SpotifySpotlightCard extends LitElement {
     }
     const entity =
       typeof entityRaw === "string" ? entityRaw.trim() : "";
-    const lim = raw.playlist_limit;
-    const playlist_limit =
-      typeof lim === "number" &&
-      Number.isFinite(lim) &&
-      lim >= 1 &&
-      lim <= 500
-        ? Math.floor(lim)
-        : undefined;
-
     const pollRaw = raw.poll_interval_seconds;
     const poll_interval_seconds =
       typeof pollRaw === "number" &&
@@ -155,44 +125,12 @@ export class SpotifySpotlightCard extends LitElement {
       entity,
       tall: raw.tall !== false,
       name: typeof raw.name === "string" ? raw.name : undefined,
-      playlist_limit,
       show_up_next: raw.show_up_next !== false,
-      show_playlists: raw.show_playlists !== false,
-      show_media_library: raw.show_media_library !== false,
+      show_browse_media_button: raw.show_browse_media_button !== false,
       cover_align,
       poll_interval_seconds,
     };
   }
-
-  @state() private _playlists: BrowseMedia[] = [];
-
-  @state() private _browseError: string | null = null;
-
-  @state() private _loadingLists = false;
-
-  /** Avoid hammering browse_media on every state update */
-  private _playlistLoadedForEntity: string | null = null;
-
-  /** Cached `browse_media(null,null)` per entity */
-  private _cachedRootBrowse: BrowseMedia | null = null;
-
-  private _cachedRootEntity: string | null = null;
-
-  @state() private _librarySections: BrowseMedia[] = [];
-
-  @state() private _libraryItems: BrowseMedia[] = [];
-
-  @state() private _libraryLoading = false;
-
-  @state() private _libraryError: string | null = null;
-
-  private _libraryStack: Array<{
-    type: string | null;
-    id: string | null;
-    title: string;
-  }> = [];
-
-  private _activeLibrarySection: BrowseMedia | null = null;
 
   private _pollTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -270,27 +208,36 @@ export class SpotifySpotlightCard extends LitElement {
       box-sizing: border-box;
     }
 
-    .body.has-up-next {
-      padding-bottom: 112px;
+    /** Wraps now-playing meta + optional up-next (side-by-side or stacked). */
+    .now-playing-row {
+      flex: 1 1 220px;
+      min-width: 0;
+      display: flex;
+      flex-flow: row wrap;
+      align-items: center;
+      gap: 14px 18px;
+    }
+
+    .top.cover-center .now-playing-row {
+      width: 100%;
+      justify-content: center;
     }
 
     .up-next {
-      position: absolute;
-      bottom: 20px;
-      right: 20px;
-      left: auto;
+      position: relative;
       display: flex;
       align-items: center;
       gap: 12px;
       padding: 10px 14px 10px 10px;
-      max-width: min(320px, calc(100% - 48px));
+      flex: 0 1 auto;
+      max-width: min(320px, 100%);
+      box-sizing: border-box;
       background: var(--spot-glass-strong);
       backdrop-filter: blur(22px);
       -webkit-backdrop-filter: blur(22px);
       border-radius: 16px;
       border: 1px solid rgba(255, 255, 255, 0.14);
-      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
-      z-index: 6;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
       text-align: left;
     }
 
@@ -358,8 +305,12 @@ export class SpotifySpotlightCard extends LitElement {
 
     .top.cover-center .meta {
       align-items: center;
-      width: 100%;
       text-align: center;
+    }
+
+    .top.cover-center .now-playing-row .meta {
+      flex: 1 1 min(420px, 100%);
+      max-width: min(420px, 100%);
     }
 
     .top.cover-center .progress-wrap {
@@ -541,109 +492,30 @@ export class SpotifySpotlightCard extends LitElement {
       font: inherit;
     }
 
-    .playlist-strip {
-      display: flex;
-      gap: 10px;
-      overflow-x: auto;
-      padding-bottom: 6px;
-      scrollbar-width: thin;
-    }
-
-    .pl-chip {
-      flex: 0 0 auto;
+    .browse-media-btn {
       display: flex;
       align-items: center;
+      justify-content: center;
       gap: 10px;
-      padding: 8px 14px;
-      border-radius: 999px;
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      background: rgba(255, 255, 255, 0.08);
-      cursor: pointer;
-      color: var(--spot-text);
-      font-size: 0.9rem;
-      max-width: 240px;
-      transition: background 0.15s ease;
-    }
-
-    .pl-chip:hover {
-      background: rgba(255, 255, 255, 0.16);
-    }
-
-    .pl-chip img {
-      width: 36px;
-      height: 36px;
-      border-radius: 8px;
-      object-fit: cover;
-      flex-shrink: 0;
-    }
-
-    .pl-title {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .library-toolbar {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      align-items: center;
-      margin-bottom: 10px;
-    }
-
-    .library-toolbar select.field {
-      flex: 1;
-      min-width: 200px;
-      padding: 10px 12px;
-      border-radius: 12px;
-      border: 1px solid rgba(255, 255, 255, 0.15);
-      background: var(--spot-glass-strong);
+      width: 100%;
+      padding: 14px 18px;
+      border-radius: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      background: rgba(255, 255, 255, 0.1);
       color: var(--spot-text);
       font: inherit;
-    }
-
-    .library-grid {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      max-height: 280px;
-      overflow-y: auto;
-      padding: 4px 0;
-    }
-
-    .library-item {
-      flex: 0 0 auto;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      max-width: 100%;
-      padding: 8px 12px;
-      border-radius: 12px;
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      background: rgba(255, 255, 255, 0.07);
+      font-weight: 600;
+      font-size: 0.95rem;
       cursor: pointer;
-      color: var(--spot-text);
-      font-size: 0.88rem;
-      text-align: left;
+      transition: background 0.15s ease, transform 0.1s ease;
     }
 
-    .library-item:hover {
-      background: rgba(255, 255, 255, 0.14);
+    .browse-media-btn:hover {
+      background: rgba(255, 255, 255, 0.18);
     }
 
-    .library-item img {
-      width: 40px;
-      height: 40px;
-      border-radius: 8px;
-      object-fit: cover;
-      flex-shrink: 0;
-    }
-
-    .breadcrumb {
-      font-size: 0.78rem;
-      color: var(--spot-muted);
-      flex: 1 1 auto;
-      min-width: 120px;
+    .browse-media-btn:active {
+      transform: scale(0.99);
     }
 
     .section-title {
@@ -651,11 +523,6 @@ export class SpotifySpotlightCard extends LitElement {
       font-size: 0.85rem;
       color: var(--spot-muted);
       letter-spacing: 0.04em;
-    }
-
-    .error {
-      font-size: 0.85rem;
-      color: #ffb4b4;
     }
 
     .subtle {
@@ -684,17 +551,6 @@ export class SpotifySpotlightCard extends LitElement {
 
     const id = this.config?.entity;
     if (changed.has("config")) {
-      if (id !== this._cachedRootEntity) {
-        this._invalidateBrowseCache();
-        this._libraryStack = [];
-        this._activeLibrarySection = null;
-        this._libraryItems = [];
-        this._librarySections = [];
-        this._playlistLoadedForEntity = null;
-      }
-    }
-
-    if (changed.has("config")) {
       this._stopTimers();
       this._startTimers();
     } else if (changed.has("hass")) {
@@ -704,32 +560,6 @@ export class SpotifySpotlightCard extends LitElement {
         this._startTimers();
       }
     }
-
-    if (!this.hass || !id) {
-      return;
-    }
-
-    if (changed.has("config") || this._playlistLoadedForEntity !== id) {
-      this._playlistLoadedForEntity = id;
-      if (this.config?.show_playlists !== false) {
-        void this._loadPlaylists();
-      } else {
-        this._playlists = [];
-        this._browseError = null;
-      }
-      if (this.config?.show_media_library !== false) {
-        void this._syncLibrarySections();
-      } else {
-        this._librarySections = [];
-        this._libraryItems = [];
-        this._libraryError = null;
-      }
-    }
-  }
-
-  private _invalidateBrowseCache(): void {
-    this._cachedRootBrowse = null;
-    this._cachedRootEntity = null;
   }
 
   private _stopTimers(): void {
@@ -774,133 +604,12 @@ export class SpotifySpotlightCard extends LitElement {
     }, pollMs);
   }
 
-  private async _getRootBrowse(): Promise<BrowseMedia> {
+  private _openHaMediaBrowser(): void {
     const id = this.config?.entity;
-    if (!this.hass || !id) {
-      throw new Error("No connection");
-    }
-    if (this._cachedRootBrowse && this._cachedRootEntity === id) {
-      return this._cachedRootBrowse;
-    }
-    const lib = await this._browse(null, null);
-    this._cachedRootBrowse = lib;
-    this._cachedRootEntity = id;
-    return lib;
-  }
-
-  private async _syncLibrarySections(): Promise<void> {
-    if (
-      !this.hass ||
-      !this.config?.entity ||
-      this.config.show_media_library === false
-    ) {
+    if (!id) {
       return;
     }
-    this._libraryLoading = true;
-    this._libraryError = null;
-    try {
-      const lib = await this._getRootBrowse();
-      this._librarySections = lib.children ?? [];
-      if (this._activeLibrarySection) {
-        const sid = this._activeLibrarySection.media_content_id;
-        const stype = this._activeLibrarySection.media_content_type;
-        const still = this._librarySections.find(
-          (c) => c.media_content_id === sid && c.media_content_type === stype,
-        );
-        if (!still) {
-          this._activeLibrarySection = null;
-          this._libraryStack = [];
-          this._libraryItems = [];
-        }
-      }
-    } catch (e) {
-      this._libraryError = formatHassError(e);
-      this._librarySections = [];
-    } finally {
-      this._libraryLoading = false;
-      this.requestUpdate();
-    }
-  }
-
-  private async _loadLibraryFolder(
-    media_content_type: string | null,
-    media_content_id: string | null,
-  ): Promise<void> {
-    if (!this.hass || !this.config?.entity) {
-      return;
-    }
-    this._libraryLoading = true;
-    this._libraryError = null;
-    try {
-      const res = await this._browse(media_content_type, media_content_id);
-      this._libraryItems = res.children ?? [];
-    } catch (e) {
-      this._libraryError = formatHassError(e);
-      this._libraryItems = [];
-    } finally {
-      this._libraryLoading = false;
-      this.requestUpdate();
-    }
-  }
-
-  private _onLibrarySectionChange(ev: Event): void {
-    const sel = ev.target as HTMLSelectElement;
-    const raw = sel.value.trim();
-    if (!raw) {
-      this._activeLibrarySection = null;
-      this._libraryItems = [];
-      this._libraryStack = [];
-      return;
-    }
-    const idx = parseInt(raw, 10);
-    if (Number.isNaN(idx) || !this._librarySections[idx]) {
-      this._activeLibrarySection = null;
-      this._libraryItems = [];
-      this._libraryStack = [];
-      return;
-    }
-    const sec = this._librarySections[idx];
-    this._activeLibrarySection = sec;
-    this._libraryStack = [];
-    const t = sec.media_content_type;
-    const mid = sec.media_content_id;
-    if (t != null && mid != null) {
-      void this._loadLibraryFolder(t, mid);
-    }
-  }
-
-  private _libraryBack(): void {
-    if (this._libraryStack.length === 0) {
-      return;
-    }
-    this._libraryStack.pop();
-    const top = this._libraryStack[this._libraryStack.length - 1];
-    if (top?.type != null && top.id != null) {
-      void this._loadLibraryFolder(top.type, top.id);
-      return;
-    }
-    const sec = this._activeLibrarySection;
-    if (sec?.media_content_type != null && sec.media_content_id != null) {
-      void this._loadLibraryFolder(sec.media_content_type, sec.media_content_id);
-    }
-  }
-
-  private async _libraryItemClick(item: BrowseMedia): Promise<void> {
-    const type = item.media_content_type;
-    const mid = item.media_content_id;
-    const canExpand = item.can_expand === true;
-    if (canExpand && type != null && mid != null) {
-      this._libraryStack.push({
-        type,
-        id: mid,
-        title: safeTitle(item),
-      });
-      await this._loadLibraryFolder(type, mid);
-      return;
-    }
-    if (type != null && mid != null && item.can_play !== false) {
-      await this._playMediaItem(item);
-    }
+    navigateFrontend(`/media-browser/${id}`);
   }
 
   private get _entity(): HassEntity | undefined {
@@ -934,77 +643,16 @@ export class SpotifySpotlightCard extends LitElement {
     });
   }
 
-  private async _loadPlaylists(): Promise<void> {
-    if (
-      !this.hass ||
-      !this.config?.entity ||
-      this.config.show_playlists === false
-    ) {
+  /** Delta is absolute change on 0–1 scale (e.g. 0.05 = five percentage points). */
+  private _adjustVolumeLevel(delta: number): void {
+    const ent = this._entity;
+    if (!ent) {
       return;
     }
-    this._loadingLists = true;
-    this._browseError = null;
-    try {
-      const lib = await this._getRootBrowse();
-      const playlistsFolder =
-        lib.children?.find(
-          (c) =>
-            c.media_content_id === "current_user_playlists" ||
-            safeTitle(c) === "Playlists",
-        ) ??
-        lib.children?.find((c) =>
-          String(c.media_content_id ?? "").includes("playlist"),
-        );
-      if (
-        !playlistsFolder?.media_content_type ||
-        !playlistsFolder.media_content_id
-      ) {
-        this._playlists = [];
-        return;
-      }
-      const pl = await this._browse(
-        playlistsFolder.media_content_type,
-        playlistsFolder.media_content_id,
-      );
-      const limit = this.config.playlist_limit ?? 24;
-      const children = pl.children ?? [];
-      this._playlists = children.slice(0, limit);
-    } catch (e) {
-      this._browseError = formatHassError(e);
-      this._playlists = [];
-    } finally {
-      this._loadingLists = false;
-      this.requestUpdate();
-    }
-  }
-
-  private async _browse(
-    media_content_type: string | null,
-    media_content_id: string | null,
-  ): Promise<BrowseMedia> {
-    const eid = this.config?.entity;
-    if (!this.hass || !eid) {
-      throw new Error("No connection");
-    }
-    const result = await this.hass.callWS({
-      type: "browse_media",
-      entity_id: eid,
-      media_content_type,
-      media_content_id,
-    });
-    return result as BrowseMedia;
-  }
-
-  private async _playMediaItem(child: BrowseMedia): Promise<void> {
-    const eid = this.config?.entity;
-    if (!child.media_content_id || !child.media_content_type || !eid) {
-      return;
-    }
-    await this.hass?.callService("media_player", "play_media", {
-      entity_id: eid,
-      media_content_id: child.media_content_id,
-      media_content_type: child.media_content_type,
-    });
+    const cur =
+      (ent.attributes.volume_level as number | undefined) ?? 0;
+    const next = Math.min(1, Math.max(0, cur + delta));
+    void this._callService("volume_set", { volume_level: next });
   }
 
   private _fmtTime(sec: number): string {
@@ -1034,7 +682,6 @@ export class SpotifySpotlightCard extends LitElement {
     const src = (a.source as string) ?? "";
     const srcList = (a.source_list as string[] | undefined) ?? [];
     const vol = (a.volume_level as number | undefined) ?? 0;
-    const muted = Boolean(a.is_volume_muted);
     const shuffle = Boolean(a.shuffle);
     const repeat = (a.repeat as string) ?? "off";
     const dur = (a.media_duration as number | undefined) ?? 0;
@@ -1067,23 +714,11 @@ export class SpotifySpotlightCard extends LitElement {
       String(a.media_next_thumbnail ?? "").trim() || "";
     const hasUpNext = showUpNext && nextTitle.length > 0;
 
-    let librarySelectValue = "";
-    if (this._activeLibrarySection && this._librarySections.length) {
-      const ix = this._librarySections.findIndex(
-        (c) =>
-          c.media_content_id === this._activeLibrarySection?.media_content_id &&
-          c.media_content_type === this._activeLibrarySection?.media_content_type,
-      );
-      if (ix >= 0) {
-        librarySelectValue = String(ix);
-      }
-    }
-
-    const crumb =
-      this._libraryStack.map((s) => s.title).join(" › ") ||
-      (this._activeLibrarySection
-        ? safeTitle(this._activeLibrarySection)
-        : "");
+    const supportedFeat = Number(a.supported_features ?? 0);
+    const showBrowseBtn =
+      this.config.show_browse_media_button !== false &&
+      (supportedFeat === 0 ||
+        (supportedFeat & MEDIA_PLAYER_FEATURE_BROWSE_MEDIA) !== 0);
 
     return html`
       <div class="wrap">
@@ -1092,7 +727,7 @@ export class SpotifySpotlightCard extends LitElement {
           style=${pic ? `background-image:url("${pic}")` : ""}
         ></div>
         <div class="scrim"></div>
-        <div class="body ${hasUpNext ? "has-up-next" : ""}">
+        <div class="body">
           <div class="top ${coverClass}">
             <div class="art">
               ${pic
@@ -1103,26 +738,54 @@ export class SpotifySpotlightCard extends LitElement {
                     ♪
                   </div>`}
             </div>
-            <div class="meta">
-              ${this.config.name
-                ? html`<span class="label">${this.config.name}</span>`
-                : html`<span class="label">Now playing</span>`}
-              <h2>${title}</h2>
-              ${artist ? html`<p class="artist">${artist}</p>` : nothing}
-              ${dur > 0
+            <div class="now-playing-row">
+              <div class="meta">
+                ${this.config.name
+                  ? html`<span class="label">${this.config.name}</span>`
+                  : html`<span class="label">Now playing</span>`}
+                <h2>${title}</h2>
+                ${artist ? html`<p class="artist">${artist}</p>` : nothing}
+                ${dur > 0
+                  ? html`
+                      <div class="progress-wrap">
+                        <div class="progress-bar">
+                          <div
+                            class="progress-fill"
+                            style="width:${pct}%"
+                          ></div>
+                        </div>
+                        <div class="time-row">
+                          <span>${this._fmtTime(pos)}</span>
+                          <span>${this._fmtTime(dur)}</span>
+                        </div>
+                      </div>
+                    `
+                  : nothing}
+              </div>
+              ${hasUpNext
                 ? html`
-                    <div class="progress-wrap">
-                      <div class="progress-bar">
-                        <div
-                          class="progress-fill"
-                          style="width:${pct}%"
-                        ></div>
+                    <aside class="up-next" aria-label="Up next">
+                      ${nextThumb
+                        ? html`<img
+                              class="up-next-cover"
+                              src=${nextThumb}
+                              alt=""
+                              loading="lazy"
+                            />`
+                        : html`<div
+                            class="up-next-cover"
+                            style="display:flex;align-items:center;justify-content:center;font-size:1.5rem;opacity:.5"
+                          >
+                            <ha-icon icon="mdi:music-note"></ha-icon>
+                          </div>`}
+                      <div class="up-next-copy">
+                        <p class="up-next-label">Up next</p>
+                        <p class="up-next-title">${nextTitle}</p>
+                        ${nextArtist
+                          ? html`<p class="up-next-artist">${nextArtist}</p>`
+                          : nothing}
                       </div>
-                      <div class="time-row">
-                        <span>${this._fmtTime(pos)}</span>
-                        <span>${this._fmtTime(dur)}</span>
-                      </div>
-                    </div>
+                    </aside>
                   `
                 : nothing}
             </div>
@@ -1183,7 +846,14 @@ export class SpotifySpotlightCard extends LitElement {
           </div>
 
           <div class="glass-panel vol-row">
-            <ha-icon icon="mdi:volume-medium"></ha-icon>
+            <button
+              class="ctrl-btn"
+              style="width:44px;height:44px;flex-shrink:0"
+              title="Volume down 5%"
+              @click=${() => this._adjustVolumeLevel(-0.05)}
+            >
+              <ha-icon icon="mdi:volume-minus"></ha-icon>
+            </button>
             <input
               type="range"
               min="0"
@@ -1197,14 +867,11 @@ export class SpotifySpotlightCard extends LitElement {
             />
             <button
               class="ctrl-btn"
-              style="width:44px;height:44px"
-              @click=${() =>
-                this._callService("volume_mute", { is_volume_muted: !muted })}
-              title=${muted ? "Unmute" : "Mute"}
+              style="width:44px;height:44px;flex-shrink:0"
+              title="Volume up 5%"
+              @click=${() => this._adjustVolumeLevel(0.05)}
             >
-              <ha-icon
-                icon=${muted ? "mdi:volume-off" : "mdi:volume-high"}
-              ></ha-icon>
+              <ha-icon icon="mdi:volume-plus"></ha-icon>
             </button>
           </div>
 
@@ -1238,153 +905,18 @@ export class SpotifySpotlightCard extends LitElement {
             </div>
           </div>
 
-          ${this.config.show_media_library !== false
+          ${showBrowseBtn
             ? html`
                 <div class="glass-panel">
-                  <p class="section-title">Media library</p>
-                  <div class="library-toolbar">
-                    <select
-                      class="field"
-                      .value=${librarySelectValue}
-                      @change=${this._onLibrarySectionChange}
-                    >
-                      <option value="">Choose library…</option>
-                      ${this._librarySections.map(
-                        (sec, i) => html`
-                          <option value=${String(i)}>
-                            ${safeTitle(sec)}
-                          </option>
-                        `,
-                      )}
-                    </select>
-                    ${this._libraryStack.length
-                      ? html`
-                          <button
-                            type="button"
-                            class="ctrl-btn"
-                            style="width:auto;height:40px;padding:0 14px"
-                            @click=${() => this._libraryBack()}
-                          >
-                            <ha-icon icon="mdi:arrow-left"></ha-icon>
-                            Back
-                          </button>
-                        `
-                      : nothing}
-                    ${this._libraryLoading
-                      ? html`<span class="subtle">loading…</span>`
-                      : nothing}
-                  </div>
-                  ${crumb
-                    ? html`<div class="breadcrumb">${crumb}</div>`
-                    : nothing}
-                  ${this._libraryError
-                    ? html`<div class="error">${this._libraryError}</div>`
-                    : nothing}
-                  <div class="library-grid">
-                    ${this._libraryItems.map(
-                      (item) => html`
-                        <button
-                          type="button"
-                          class="library-item"
-                          @click=${() => void this._libraryItemClick(item)}
-                        >
-                          ${item.thumbnail
-                            ? html`<img src=${item.thumbnail} alt="" />`
-                            : html`<ha-icon icon="mdi:music-note"></ha-icon>`}
-                          <span>${safeTitle(item)}</span>
-                          ${item.can_expand === true
-                            ? html`<ha-icon
-                                icon="mdi:chevron-right"
-                                style="opacity:.6;margin-left:4px"
-                              ></ha-icon>`
-                            : nothing}
-                        </button>
-                      `,
-                    )}
-                  </div>
-                  ${!this._libraryLoading &&
-                  !this._libraryItems.length &&
-                  this._activeLibrarySection &&
-                  !this._libraryError
-                    ? html`<div class="subtle">Nothing to show here</div>`
-                    : nothing}
-                </div>
-              `
-            : nothing}
-          ${this.config.show_playlists !== false
-            ? html`
-                <div>
-                  <p
-                    class="section-title"
-                    style="display:flex;align-items:center;gap:10px;"
+                  <button
+                    type="button"
+                    class="browse-media-btn"
+                    @click=${() => this._openHaMediaBrowser()}
                   >
-                    <span>Playlists</span>
-                    ${this._loadingLists
-                      ? html`<span class="subtle">loading…</span>`
-                      : nothing}
-                    <button
-                      type="button"
-                      class="ctrl-btn"
-                      style="width:36px;height:36px;margin-left:auto"
-                      title="Refresh playlists"
-                      @click=${() => void this._loadPlaylists()}
-                    >
-                      <ha-icon icon="mdi:refresh"></ha-icon>
-                    </button>
-                  </p>
-                  ${this._browseError
-                    ? html`<div class="error">${this._browseError}</div>`
-                    : nothing}
-                  <div class="playlist-strip">
-                    ${this._playlists.map(
-                      (pl) => html`
-                        <button
-                          class="pl-chip"
-                          @click=${() => void this._playMediaItem(pl)}
-                        >
-                          ${pl.thumbnail
-                            ? html`<img src=${pl.thumbnail} alt="" />`
-                            : html`<ha-icon
-                                icon="mdi:music-box-multiple"
-                              ></ha-icon>`}
-                          <span class="pl-title">${safeTitle(pl)}</span>
-                        </button>
-                      `,
-                    )}
-                  </div>
-                  ${!this._loadingLists &&
-                  !this._playlists.length &&
-                  !this._browseError
-                    ? html`<div class="subtle">No playlists loaded</div>`
-                    : nothing}
+                    <ha-icon icon="mdi:play-box-multiple-outline"></ha-icon>
+                    <span>Media library</span>
+                  </button>
                 </div>
-              `
-            : nothing}
-
-          ${hasUpNext
-            ? html`
-                <aside class="up-next" aria-label="Up next">
-                  ${nextThumb
-                    ? html`<img
-                          class="up-next-cover"
-                          src=${nextThumb}
-                          alt=""
-                          loading="lazy"
-                        />`
-                    : html`<div
-                        class="up-next-cover"
-                        style="display:flex;align-items:center;justify-content:center;font-size:1.5rem;opacity:.5"
-                      >
-                        <ha-icon icon="mdi:music-note"></ha-icon>
-                      </div>`}
-                  <div class="up-next-copy">
-                    <p class="up-next-label">Up next</p>
-                    <p class="up-next-title">${nextTitle}</p>
-                    ${nextArtist
-                      ? html`<p class="up-next-artist">${nextArtist}</p>`
-                      : nothing}
-                  </div>
-                </aside>
               `
             : nothing}
         </div>
