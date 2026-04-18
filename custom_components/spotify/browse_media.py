@@ -35,7 +35,11 @@ from .const import (
     MEDIA_TYPE_USER_SAVED_TRACKS,
     PLAYABLE_MEDIA_TYPES,
 )
-from .util import fetch_image_url
+from .util import (
+    async_get_playlist_resilient,
+    async_get_playlists_for_current_user_resilient,
+    fetch_image_url,
+)
 
 BROWSE_LIMIT = 48
 
@@ -315,15 +319,8 @@ async def _browse_playlist_tracks(
     image: str | None = None
     payloads: list[ItemPayload] = []
 
-    try:
-        playlist = await spotify.get_playlist(media_content_id)
-    except Exception:
-        _LOGGER.debug(
-            "Could not load full playlist object for %s; trying playlist items endpoint",
-            media_content_id,
-            exc_info=True,
-        )
-    else:
+    playlist = await async_get_playlist_resilient(spotify, media_content_id)
+    if playlist is not None:
         title = playlist.name
         image = playlist.images[0].url if playlist.images else None
         container = playlist.items
@@ -465,7 +462,7 @@ async def build_item_response(  # noqa: C901
     items: list[ItemPayload] = []
 
     if media_content_type == BrowsableMedia.CURRENT_USER_PLAYLISTS:
-        if playlists := await spotify.get_playlists_for_current_user():
+        if playlists := await async_get_playlists_for_current_user_resilient(spotify):
             items = [_get_playlist_item_payload(playlist) for playlist in playlists]
     elif media_content_type == BrowsableMedia.CURRENT_USER_FOLLOWED_ARTISTS:
         if artists := await spotify.get_followed_artists():

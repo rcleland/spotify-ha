@@ -11,9 +11,12 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
       - uses: actions/checkout@v4
+      # Repo topics live only on GitHub (Settings → General); HACS cannot read them from git.
+      # Add topics there for the default store, or remove `topics` from ignore once set.
       - uses: hacs/action@main
         with:
           category: integration
+          ignore: topics
 
   hassfest:
     runs-on: ubuntu-latest

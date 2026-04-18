@@ -28,6 +28,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
+from .util import async_get_playlist_resilient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -202,22 +203,12 @@ class SpotifyCoordinator(DataUpdateCoordinator[SpotifyCoordinatorData]):
                 self._playlist = None
                 if context.context_type == ContextType.PLAYLIST:
                     # Make sure any playlist lookups don't break the current
-                    # playback state update
+                    # playback state update (spotifyaio strict models + slim API payloads).
                     try:
-                        self._playlist = await self.client.get_playlist(context.uri)
-                    except SpotifyNotFoundError:
-                        _LOGGER.debug(
-                            "Spotify playlist '%s' not found. "
-                            "Most likely a Spotify-created playlist",
-                            context.uri,
+                        self._playlist = await async_get_playlist_resilient(
+                            self.client, context.uri
                         )
-                        self._playlist = None
                     except SpotifyConnectionError:
-                        _LOGGER.debug(
-                            "Unable to load spotify playlist '%s'. "
-                            "Continuing without playlist data",
-                            context.uri,
-                        )
                         self._playlist = None
                         self._checked_playlist_id = None
         if current.is_playing and current.progress_ms is not None:
