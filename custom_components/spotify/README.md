@@ -25,13 +25,15 @@ This is a **drop-in replacement** for the built-in Home Assistant **Spotify** in
 
 4. Confirm **custom component** is loaded: **Developer tools → YAML → Info** (or logs at startup) — you should **not** see “Using core integration only” for Spotify if the override is active. With the same domain, the custom folder **should** override core.
 
+**Lovelace card:** After setup, Home Assistant registers **`/spotify-spotlight-static/spotify-spotlight-card.js`** as a module resource (**storage dashboards**). The bundle lives in **`frontend/`** inside this folder. YAML-mode Lovelace: add that URL under `resources` manually — see the [repository README](https://github.com/rcleland/spotify-ha).
+
 ## Requirements
 
 Same as core: [Spotify integration docs](https://www.home-assistant.io/integrations/spotify), including Developer Application and OAuth via Application Credentials.
 
 ## Version
 
-See `manifest.json` → `version`. Bump when you sync from upstream core.
+See `manifest.json` → `version` (semver). Bump each release and publish a matching **GitHub Release** tag so HACS shows that version instead of the commit hash.
 
 ## Syncing from Home Assistant core
 

@@ -342,15 +342,18 @@ class SpotifyMediaPlayer(SpotifyEntity, MediaPlayerEntity):
         enqueue: MediaPlayerEnqueue = kwargs.get(
             ATTR_MEDIA_ENQUEUE, MediaPlayerEnqueue.REPLACE
         )
+        extra = kwargs.get("extra")
+        if not isinstance(extra, dict):
+            extra = {}
 
-        kwargs = {}
+        play_kwargs: dict[str, Any] = {}
 
         # Spotify can't handle URI's with query strings or anchors
         # Yet, they do generate those types of URI in their official clients.
         media_id = str(URL(media_id).with_query(None).with_fragment(None))
 
         if media_type in {MediaType.TRACK, MediaType.EPISODE, MediaType.MUSIC}:
-            kwargs["uris"] = [media_id]
+            play_kwargs["uris"] = [media_id]
         elif media_type in PLAYABLE_MEDIA_TYPES:
             context_uri = media_id
 
@@ -358,13 +361,13 @@ class SpotifyMediaPlayer(SpotifyEntity, MediaPlayerEntity):
                 user_data = await self.coordinator.client.get_current_user()
                 context_uri = f"spotify:user:{user_data.user_id}:collection"
 
-            kwargs["context_uri"] = context_uri
+            play_kwargs["context_uri"] = context_uri
         else:
             _LOGGER.error("Media type %s is not supported", media_type)
             return
 
         if not self.currently_playing and self.devices.data:
-            kwargs["device_id"] = self.devices.data[0].device_id
+            play_kwargs["device_id"] = self.devices.data[0].device_id
 
         if enqueue == MediaPlayerEnqueue.ADD:
             if media_type not in {
@@ -376,11 +379,19 @@ class SpotifyMediaPlayer(SpotifyEntity, MediaPlayerEntity):
                     f"Media type {media_type} is not supported when enqueue is ADD"
                 )
             await self.coordinator.client.add_to_queue(
-                media_id, kwargs.get("device_id")
+                media_id, play_kwargs.get("device_id")
             )
             return
 
-        await self.coordinator.client.start_playback(**kwargs)
+        offset_uri = extra.get("offset_uri") or extra.get("track_uri")
+        if (
+            media_type == MediaType.PLAYLIST
+            and isinstance(offset_uri, str)
+            and offset_uri.startswith("spotify:track:")
+        ):
+            play_kwargs["offset"] = {"uri": offset_uri}
+
+        await self.coordinator.client.start_playback(**play_kwargs)
 
     @async_refresh_after
     async def async_select_source(self, source: str) -> None:

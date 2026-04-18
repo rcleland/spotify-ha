@@ -3,12 +3,12 @@
   "name": "Spotify",
   "codeowners": ["@rcleland"],
   "config_flow": true,
-  "dependencies": ["application_credentials"],
+  "dependencies": ["application_credentials", "frontend", "http"],
   "documentation": "https://github.com/rcleland/spotify-ha",
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/rcleland/spotify-ha/issues",
   "loggers": ["spotifyaio"],
   "requirements": ["spotifyaio==2.0.2"],
-  "version": "2026.4.19"
+  "version": "1.2.0"
 }

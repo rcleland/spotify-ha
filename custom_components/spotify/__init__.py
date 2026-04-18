@@ -18,7 +18,8 @@ from homeassistant.helpers.config_entry_oauth2_flow import (
 )
 
 from .browse_media import async_browse_media
-from .const import DOMAIN, SPOTIFY_SCOPES
+from .const import DOMAIN, SPOTIFY_SCOPES, SPOTLIGHT_CARD_SETUP_FLAG
+from .lovelace import async_register_spotify_spotlight_card
 from .coordinator import (
     SpotifyConfigEntry,
     SpotifyCoordinator,
@@ -44,6 +45,10 @@ __all__ = [
 
 async def async_setup_entry(hass: HomeAssistant, entry: SpotifyConfigEntry) -> bool:
     """Set up Spotify from a config entry."""
+    if not hass.data.get(SPOTLIGHT_CARD_SETUP_FLAG):
+        hass.data[SPOTLIGHT_CARD_SETUP_FLAG] = True
+        await async_register_spotify_spotlight_card(hass)
+
     try:
         implementation = await async_get_config_entry_implementation(hass, entry)
     except ImplementationUnavailableError as err:

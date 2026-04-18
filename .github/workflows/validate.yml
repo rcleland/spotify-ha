@@ -16,6 +16,17 @@ jobs:
           category: integration
           ignore: topics
 
+  # Lovelace card (HACS Frontend → Dashboard / plugin). Same repo, separate category from integration.
+  hacs-plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # Plugin check includes screenshots in info.md for default-store PRs; optional for CI.
+      - uses: hacs/action@main
+        with:
+          category: plugin
+          ignore: topics images
+
   hassfest:
     runs-on: ubuntu-latest
     steps:

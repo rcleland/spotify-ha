@@ -42,6 +42,8 @@ from .util import (
 )
 
 BROWSE_LIMIT = 48
+# Spotify returns up to 100 per request; avoid huge browse trees.
+_MAX_PLAYLIST_TRACKS_BROWSE = 800
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -124,6 +126,8 @@ class BrowsableMedia(StrEnum):
     CURRENT_USER_RECENTLY_PLAYED = "current_user_recently_played"
     CURRENT_USER_TOP_ARTISTS = "current_user_top_artists"
     CURRENT_USER_TOP_TRACKS = "current_user_top_tracks"
+    ARTIST_POPULAR_TRACKS = "artist_popular_tracks"
+    ARTIST_ALBUM_LIST = "artist_album_list"
 
 
 LIBRARY_MAP = {
@@ -170,12 +174,20 @@ CONTENT_TYPE_MEDIA_CLASS: dict[str, Any] = {
         "parent": MediaClass.DIRECTORY,
         "children": MediaClass.TRACK,
     },
+    BrowsableMedia.ARTIST_POPULAR_TRACKS.value: {
+        "parent": MediaClass.DIRECTORY,
+        "children": MediaClass.TRACK,
+    },
+    BrowsableMedia.ARTIST_ALBUM_LIST.value: {
+        "parent": MediaClass.DIRECTORY,
+        "children": MediaClass.ALBUM,
+    },
     MediaType.PLAYLIST: {
         "parent": MediaClass.PLAYLIST,
         "children": MediaClass.TRACK,
     },
     MediaType.ALBUM: {"parent": MediaClass.ALBUM, "children": MediaClass.TRACK},
-    MediaType.ARTIST: {"parent": MediaClass.ARTIST, "children": MediaClass.ALBUM},
+    MediaType.ARTIST: {"parent": MediaClass.ARTIST, "children": MediaClass.DIRECTORY},
     MediaType.EPISODE: {"parent": MediaClass.EPISODE, "children": None},
     MEDIA_TYPE_SHOW: {"parent": MediaClass.PODCAST, "children": MediaClass.EPISODE},
     MediaType.TRACK: {"parent": MediaClass.TRACK, "children": None},
@@ -245,48 +257,145 @@ async def _get_artist_albums_resilient(
     return albums
 
 
-async def _get_playlist_item_rows_resilient(
-    spotify: SpotifyClient, media_content_id: str
-) -> list[PlaylistTrack]:
-    """Load playlist rows; tolerate track/item field rename (Feb 2026 Web API)."""
+async def _spotify_user_market(spotify: SpotifyClient) -> str | None:
+    """ISO country for track/album markets (required for many catalog endpoints)."""
     try:
-        return await spotify.get_playlist_items(media_content_id)
+        profile = await spotify.get_current_user()
+    except Exception:
+        return None
+    country = getattr(profile, "country", None)
+    if isinstance(country, str) and len(country) == 2:
+        return country.upper()
+    return None
+
+
+def _track_payload_from_raw_dict(track: dict[str, Any]) -> ItemPayload | None:
+    uri = track.get("uri")
+    name = track.get("name")
+    if not isinstance(uri, str) or not isinstance(name, str):
+        return None
+    thumb: str | None = None
+    album = track.get("album")
+    if isinstance(album, dict):
+        imgs = album.get("images") or []
+        if imgs and isinstance(imgs[0], dict):
+            thumb = imgs[0].get("url")
+    tid = track.get("id")
+    return {
+        "id": tid if isinstance(tid, str) else None,
+        "name": name,
+        "type": MediaType.TRACK,
+        "uri": uri,
+        "thumbnail": thumb,
+    }
+
+
+def _episode_payload_from_raw_dict(episode: dict[str, Any]) -> ItemPayload | None:
+    uri = episode.get("uri")
+    name = episode.get("name")
+    if not isinstance(uri, str) or not isinstance(name, str):
+        return None
+    thumb: str | None = None
+    imgs = episode.get("images") or []
+    if imgs and isinstance(imgs[0], dict):
+        thumb = imgs[0].get("url")
+    eid = episode.get("id")
+    return {
+        "id": eid if isinstance(eid, str) else None,
+        "name": name,
+        "type": MediaType.EPISODE,
+        "uri": uri,
+        "thumbnail": thumb,
+    }
+
+
+def _playlist_api_row_to_payload(row: dict[str, Any]) -> ItemPayload | None:
+    """Parse one playlist-items row; fall back to loose dict mapping when models fail."""
+    if row.get("is_local"):
+        return None
+    track = row.get("track")
+    if track is None and "item" in row:
+        track = row["item"]
+    if not isinstance(track, dict) or track.get("is_local"):
+        return None
+    ttype = track.get("type")
+    row_for_model = {**row, "track": track}
+    try:
+        pt = PlaylistTrack.from_json(orjson.dumps(row_for_model).decode())
+        inner = pt.track
+        if inner.type is ItemType.TRACK:
+            if TYPE_CHECKING:
+                assert isinstance(inner, Track)
+            return _get_track_item_payload(inner)
+        if inner.type is ItemType.EPISODE:
+            if TYPE_CHECKING:
+                assert isinstance(inner, Episode)
+            return _get_episode_item_payload(inner)
+    except Exception:
+        pass
+    if ttype == "episode":
+        return _episode_payload_from_raw_dict(track)
+    return _track_payload_from_raw_dict(track)
+
+
+async def _load_playlist_track_payloads(
+    spotify: SpotifyClient, media_content_id: str
+) -> list[ItemPayload]:
+    """Paged playlist tracks with market + relaxed parsing (followed / others' playlists)."""
+    market = await _spotify_user_market(spotify)
+    identifier = get_identifier(media_content_id)
+    raw_get = getattr(spotify, "_get", None)
+    payloads: list[ItemPayload] = []
+
+    if raw_get:
+        offset = 0
+        while offset < _MAX_PLAYLIST_TRACKS_BROWSE:
+            params: dict[str, Any] = {
+                "limit": BROWSE_LIMIT,
+                "offset": offset,
+                "additional_types": "track,episode",
+            }
+            if market:
+                params["market"] = market
+            try:
+                raw = await raw_get(
+                    f"v1/playlists/{identifier}/items",
+                    params=params,
+                )
+            except Exception:
+                _LOGGER.warning(
+                    "Playlist items request failed for %s at offset %s",
+                    media_content_id,
+                    offset,
+                    exc_info=True,
+                )
+                break
+            chunk_items = orjson.loads(raw).get("items") or []
+            if not chunk_items:
+                break
+            for row in chunk_items:
+                if not isinstance(row, dict):
+                    continue
+                pl = _playlist_api_row_to_payload(row)
+                if pl:
+                    payloads.append(pl)
+            if len(chunk_items) < BROWSE_LIMIT:
+                break
+            offset += BROWSE_LIMIT
+
+    if payloads:
+        return payloads
+
+    try:
+        rows = await spotify.get_playlist_items(media_content_id)
     except Exception:
         _LOGGER.debug(
-            "get_playlist_items failed for %s, trying raw API response",
+            "get_playlist_items fallback failed for %s",
             media_content_id,
             exc_info=True,
         )
-    raw_get = getattr(spotify, "_get", None)
-    if raw_get is None:
         return []
-    identifier = get_identifier(media_content_id)
-    try:
-        raw = await raw_get(
-            f"v1/playlists/{identifier}/items",
-            params={
-                "limit": BROWSE_LIMIT,
-                "additional_types": "track,episode",
-            },
-        )
-    except Exception:
-        _LOGGER.warning(
-            "Could not load playlist tracks for %s", media_content_id, exc_info=True
-        )
-        return []
-    rows: list[PlaylistTrack] = []
-    for row in orjson.loads(raw).get("items") or []:
-        if row.get("is_local"):
-            continue
-        if "track" not in row and "item" in row:
-            row = {**row, "track": row["item"]}
-        try:
-            rows.append(
-                PlaylistTrack.from_json(orjson.dumps(row).decode())
-            )
-        except Exception:
-            continue
-    return rows
+    return _playlist_rows_to_payloads(rows)
 
 
 def _playlist_rows_to_payloads(rows: list[PlaylistTrack]) -> list[ItemPayload]:
@@ -294,6 +403,8 @@ def _playlist_rows_to_payloads(rows: list[PlaylistTrack]) -> list[ItemPayload]:
     items: list[ItemPayload] = []
     for playlist_item in rows:
         inner = playlist_item.track
+        if inner is None:
+            continue
         if inner.type is ItemType.TRACK:
             if TYPE_CHECKING:
                 assert isinstance(inner, Track)
@@ -308,30 +419,52 @@ def _playlist_rows_to_payloads(rows: list[PlaylistTrack]) -> list[ItemPayload]:
 async def _browse_playlist_tracks(
     spotify: SpotifyClient, media_content_id: str
 ) -> tuple[str | None, str | None, list[ItemPayload]]:
-    """Resolve playlist title, artwork, and track list.
-
-    Spotify may omit embedded ``items`` on ``GET /playlists/{id}`` for playlists the
-    current user does not own or collaborate on. That breaks strict deserialization of
-    the full ``Playlist`` model; ``GET /playlists/{id}/items`` still returns tracks when
-    the API allows it (subject to account / app quota mode).
-    """
+    """Resolve playlist title, artwork, and track list (full paging; works for followed lists)."""
     title: str | None = None
     image: str | None = None
-    payloads: list[ItemPayload] = []
 
     playlist = await async_get_playlist_resilient(spotify, media_content_id)
     if playlist is not None:
         title = playlist.name
         image = playlist.images[0].url if playlist.images else None
-        container = playlist.items
-        if container and container.items:
-            payloads.extend(_playlist_rows_to_payloads(container.items))
 
-    if not payloads:
-        rows = await _get_playlist_item_rows_resilient(spotify, media_content_id)
-        payloads.extend(_playlist_rows_to_payloads(rows))
-
+    payloads = await _load_playlist_track_payloads(spotify, media_content_id)
     return title, image, payloads
+
+
+async def _get_artist_top_track_payloads(
+    spotify: SpotifyClient, artist_uri: str
+) -> list[ItemPayload]:
+    """Artist top tracks (requires market)."""
+    market = await _spotify_user_market(spotify)
+    if not market:
+        market = "US"
+    raw_get = getattr(spotify, "_get", None)
+    if raw_get is None:
+        return []
+    identifier = get_identifier(artist_uri)
+    try:
+        raw = await raw_get(
+            f"v1/artists/{identifier}/top-tracks",
+            params={"market": market},
+        )
+    except Exception:
+        _LOGGER.warning(
+            "Could not load artist top tracks for %s", artist_uri, exc_info=True
+        )
+        return []
+    items: list[ItemPayload] = []
+    for track_data in orjson.loads(raw).get("tracks") or []:
+        if not isinstance(track_data, dict):
+            continue
+        try:
+            track = Track.from_json(orjson.dumps(track_data).decode())
+            items.append(_get_track_item_payload(track))
+        except Exception:
+            pl = _track_payload_from_raw_dict(track_data)
+            if pl:
+                items.append(pl)
+    return items
 
 
 async def async_browse_media(
@@ -517,16 +650,35 @@ async def build_item_response(  # noqa: C901
                 _get_track_item_payload(track, show_thumbnails=False)
                 for track in album.tracks
             ]
+    elif media_content_type == BrowsableMedia.ARTIST_POPULAR_TRACKS.value:
+        title = "Popular tracks"
+        items = await _get_artist_top_track_payloads(spotify, media_content_id)
+    elif media_content_type == BrowsableMedia.ARTIST_ALBUM_LIST.value:
+        title = "Albums"
+        artist_albums = await _get_artist_albums_resilient(spotify, media_content_id)
+        items = [_get_album_item_payload(album) for album in artist_albums]
     elif media_content_type == MediaType.ARTIST:
         artist = await spotify.get_artist(media_content_id)
         if not artist:
             return None
         title = artist.name
         image = artist.images[0].url if artist.images else None
-        artist_albums = await _get_artist_albums_resilient(
-            spotify, media_content_id
-        )
-        items = [_get_album_item_payload(album) for album in artist_albums]
+        items = [
+            {
+                "name": "Popular tracks",
+                "type": BrowsableMedia.ARTIST_POPULAR_TRACKS.value,
+                "uri": media_content_id,
+                "id": artist.artist_id,
+                "thumbnail": None,
+            },
+            {
+                "name": "Albums",
+                "type": BrowsableMedia.ARTIST_ALBUM_LIST.value,
+                "uri": media_content_id,
+                "id": artist.artist_id,
+                "thumbnail": None,
+            },
+        ]
     elif media_content_type == MEDIA_TYPE_SHOW:
         if (show_episodes := await spotify.get_show_episodes(media_content_id)) and (
             show := await spotify.get_show(media_content_id)

@@ -6,6 +6,9 @@ from homeassistant.components.media_player import MediaType
 
 DOMAIN = "spotify"
 
+# hass.data key — register Lovelace module once per Home Assistant runtime
+SPOTLIGHT_CARD_SETUP_FLAG = "spotify_spotlight_card_setup_done"
+
 LOGGER = logging.getLogger(__package__)
 
 SPOTIFY_SCOPES = [
