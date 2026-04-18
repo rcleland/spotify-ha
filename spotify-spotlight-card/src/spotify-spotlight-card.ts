@@ -27,9 +27,6 @@ declare global {
     }>;
   }
 
-  interface HTMLElementTagNameMap {
-    "ha-media-player-browse": HTMLElement;
-  }
 }
 
 interface HassEntity {
@@ -39,6 +36,8 @@ interface HassEntity {
 
 interface HomeAssistant {
   states: Record<string, HassEntity>;
+  /** Home Assistant frontend — resolves paths for subfolder installs */
+  hassUrl?(path: string): string;
   callService(
     domain: string,
     service: string,
@@ -397,9 +396,25 @@ export class SpotifySpotlightCard extends LitElement {
     .controls-main {
       display: flex;
       align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .transport-cluster {
+      display: flex;
+      flex: 1 1 auto;
+      align-items: center;
       justify-content: center;
       gap: 12px;
       flex-wrap: wrap;
+      min-width: 0;
+    }
+
+    .browse-icon-btn {
+      flex: 0 0 auto;
+      margin-left: auto;
+      width: 44px;
+      height: 44px;
     }
 
     .ctrl-btn {
@@ -477,32 +492,6 @@ export class SpotifySpotlightCard extends LitElement {
       font: inherit;
     }
 
-    .browse-media-btn {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 10px;
-      width: 100%;
-      padding: 14px 18px;
-      border-radius: 14px;
-      border: 1px solid rgba(255, 255, 255, 0.14);
-      background: rgba(255, 255, 255, 0.1);
-      color: var(--spot-text);
-      font: inherit;
-      font-weight: 600;
-      font-size: 0.95rem;
-      cursor: pointer;
-      transition: background 0.15s ease, transform 0.1s ease;
-    }
-
-    .browse-media-btn:hover {
-      background: rgba(255, 255, 255, 0.18);
-    }
-
-    .browse-media-btn:active {
-      transform: scale(0.99);
-    }
-
     .media-browser-overlay {
       position: fixed;
       inset: 0;
@@ -561,10 +550,12 @@ export class SpotifySpotlightCard extends LitElement {
       background: rgba(255, 255, 255, 0.14);
     }
 
-    .media-browser-panel ha-media-player-browse {
+    .media-browser-iframe {
       flex: 1 1 auto;
       min-height: 0;
       width: 100%;
+      border: none;
+      background: var(--primary-background-color, rgb(18, 18, 22));
     }
 
     .section-title {
@@ -622,24 +613,17 @@ export class SpotifySpotlightCard extends LitElement {
     }
   }
 
-  private _onBrowseMediaPicked(ev: Event): void {
-    ev.stopPropagation();
-    const eid = this.config?.entity;
-    if (!eid || !this.hass) {
-      return;
+  /** Full HA media-browser page in an iframe — `ha-media-player-browse` is not always registered on Lovelace routes. */
+  private _mediaBrowserIframeSrc(): string {
+    const id = this.config?.entity;
+    if (!id || typeof window === "undefined") {
+      return "";
     }
-    const detail = (ev as CustomEvent<{
-      item?: { media_content_id?: string; media_content_type?: string };
-    }>).detail;
-    const item = detail?.item;
-    if (!item?.media_content_id || !item?.media_content_type) {
-      return;
+    const path = `/media-browser/${encodeURIComponent(id)}`;
+    if (this.hass?.hassUrl) {
+      return this.hass.hassUrl(path);
     }
-    void this.hass.callService("media_player", "play_media", {
-      entity_id: eid,
-      media_content_id: item.media_content_id,
-      media_content_type: item.media_content_type,
-    });
+    return new URL(path, window.location.origin).href;
   }
 
   updated(changed: Map<string, unknown>): void {
@@ -858,58 +842,72 @@ export class SpotifySpotlightCard extends LitElement {
             </div>
 
             <div class="glass-panel controls-main">
-            <button
-              class="ctrl-btn"
-              @click=${() => this._callService("media_previous_track")}
-              title="Previous"
-            >
-              <ha-icon icon="mdi:skip-previous"></ha-icon>
-            </button>
-            <button
-              class="ctrl-btn primary"
-              @click=${() => this._callService("media_play_pause")}
-              title=${playing ? "Pause" : "Play"}
-            >
-              <ha-icon
-                icon=${playing ? "mdi:pause" : "mdi:play"}
-                style="font-size:28px"
-              ></ha-icon>
-            </button>
-            <button
-              class="ctrl-btn"
-              @click=${() => this._callService("media_next_track")}
-              title="Next"
-            >
-              <ha-icon icon="mdi:skip-next"></ha-icon>
-            </button>
-            <button
-              class="ctrl-btn ${shuffle ? "active" : ""}"
-              @click=${() =>
-                this._callService("shuffle_set", { shuffle: !shuffle })}
-              title="Shuffle"
-            >
-              <ha-icon icon="mdi:shuffle"></ha-icon>
-            </button>
-            <button
-              class="ctrl-btn ${repeat !== "off" ? "active" : ""}"
-              @click=${() => {
-                const next =
-                  repeat === "off"
-                    ? "all"
-                    : repeat === "all"
-                      ? "one"
-                      : "off";
-                return this._callService("repeat_set", { repeat: next });
-              }}
-              title="Repeat"
-            >
-              <ha-icon
-                icon=${repeat === "one"
-                  ? "mdi:repeat-once"
-                  : "mdi:repeat"}
-              ></ha-icon>
-            </button>
-          </div>
+              <div class="transport-cluster">
+                <button
+                  class="ctrl-btn"
+                  @click=${() => this._callService("media_previous_track")}
+                  title="Previous"
+                >
+                  <ha-icon icon="mdi:skip-previous"></ha-icon>
+                </button>
+                <button
+                  class="ctrl-btn primary"
+                  @click=${() => this._callService("media_play_pause")}
+                  title=${playing ? "Pause" : "Play"}
+                >
+                  <ha-icon
+                    icon=${playing ? "mdi:pause" : "mdi:play"}
+                    style="font-size:28px"
+                  ></ha-icon>
+                </button>
+                <button
+                  class="ctrl-btn"
+                  @click=${() => this._callService("media_next_track")}
+                  title="Next"
+                >
+                  <ha-icon icon="mdi:skip-next"></ha-icon>
+                </button>
+                <button
+                  class="ctrl-btn ${shuffle ? "active" : ""}"
+                  @click=${() =>
+                    this._callService("shuffle_set", { shuffle: !shuffle })}
+                  title="Shuffle"
+                >
+                  <ha-icon icon="mdi:shuffle"></ha-icon>
+                </button>
+                <button
+                  class="ctrl-btn ${repeat !== "off" ? "active" : ""}"
+                  @click=${() => {
+                    const next =
+                      repeat === "off"
+                        ? "all"
+                        : repeat === "all"
+                          ? "one"
+                          : "off";
+                    return this._callService("repeat_set", { repeat: next });
+                  }}
+                  title="Repeat"
+                >
+                  <ha-icon
+                    icon=${repeat === "one"
+                      ? "mdi:repeat-once"
+                      : "mdi:repeat"}
+                  ></ha-icon>
+                </button>
+              </div>
+              ${showBrowseBtn
+                ? html`
+                    <button
+                      type="button"
+                      class="ctrl-btn browse-icon-btn"
+                      title="Media library"
+                      @click=${() => this._openMediaBrowserOverlay()}
+                    >
+                      <ha-icon icon="mdi:play-box-multiple-outline"></ha-icon>
+                    </button>
+                  `
+                : nothing}
+            </div>
 
           <div class="glass-panel vol-row">
             <button
@@ -971,20 +969,6 @@ export class SpotifySpotlightCard extends LitElement {
             </div>
           </div>
 
-            ${showBrowseBtn
-              ? html`
-                  <div class="glass-panel">
-                    <button
-                      type="button"
-                      class="browse-media-btn"
-                      @click=${() => this._openMediaBrowserOverlay()}
-                    >
-                      <ha-icon icon="mdi:play-box-multiple-outline"></ha-icon>
-                      <span>Media library</span>
-                    </button>
-                  </div>
-                `
-              : nothing}
           </div>
           ${hasUpNext
             ? html`
@@ -1032,13 +1016,11 @@ export class SpotifySpotlightCard extends LitElement {
                       Close
                     </button>
                   </div>
-                  <ha-media-player-browse
-                    .hass=${this.hass}
-                    .entityId=${this.config.entity}
-                    .action=${"play"}
-                    .dialog=${true}
-                    @media-picked=${this._onBrowseMediaPicked}
-                  ></ha-media-player-browse>
+                  <iframe
+                    class="media-browser-iframe"
+                    title="Media library"
+                    src=${this._mediaBrowserIframeSrc()}
+                  ></iframe>
                 </div>
               </div>
             `
