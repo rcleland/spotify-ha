@@ -1,0 +1,9 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+ha-core/
+tmp_pkg/
+spotify-spotlight-card/node_modules/
+spotify-spotlight-card/dist/ts/
+spotify-spotlight-card/.npm-cache/
+*.log

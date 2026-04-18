@@ -1,0 +1,8 @@
+{
+  "name": "Spotify Spotlight",
+  "render_readme": true,
+  "hide_default_branch": false,
+  "homeassistant": "2024.8.0",
+  "hacs": "2.0.0",
+  "filename": "dist/spotify-spotlight-card.js"
+}
