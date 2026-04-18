@@ -11,6 +11,12 @@ import {
 } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 
+import type { SpotifySpotlightCardConfig } from "./spotify-config";
+
+export type { SpotifySpotlightCardConfig } from "./spotify-config";
+
+import "./spotify-spotlight-card-editor";
+
 declare global {
   interface Window {
     customCards?: Array<{
@@ -20,19 +26,6 @@ declare global {
       preview?: boolean;
     }>;
   }
-}
-
-export interface SpotifySpotlightCardConfig {
-  type: string;
-  entity: string;
-  /** Fill dashboard panel height */
-  tall?: boolean;
-  /** Optional card title */
-  name?: string;
-  /** Max playlist chips to show */
-  playlist_limit?: number;
-  /** Show Spotify queue peek (needs integration attributes media_next_*) */
-  show_up_next?: boolean;
 }
 
 interface HassEntity {
@@ -81,9 +74,48 @@ export class SpotifySpotlightCard extends LitElement {
     };
   }
 
+  static getConfigElement(): HTMLElement {
+    return document.createElement("spotify-spotlight-card-editor");
+  }
+
   @property({ attribute: false }) public hass?: HomeAssistant;
 
-  @property({ type: Object }) public config!: SpotifySpotlightCardConfig;
+  @property({ type: Object }) public config?: SpotifySpotlightCardConfig;
+
+  /** Home Assistant invokes this — not Lit's @property setter. */
+  public setConfig(config: unknown): void {
+    if (!config || typeof config !== "object") {
+      throw new Error("Invalid configuration");
+    }
+    const raw = config as Record<string, unknown>;
+    const entityRaw = raw.entity;
+    if (
+      entityRaw !== undefined &&
+      entityRaw !== null &&
+      typeof entityRaw !== "string"
+    ) {
+      throw new Error("entity must be a string");
+    }
+    const entity =
+      typeof entityRaw === "string" ? entityRaw.trim() : "";
+    const lim = raw.playlist_limit;
+    const playlist_limit =
+      typeof lim === "number" &&
+      Number.isFinite(lim) &&
+      lim >= 1 &&
+      lim <= 500
+        ? Math.floor(lim)
+        : undefined;
+
+    this.config = {
+      type: "custom:spotify-spotlight-card",
+      entity,
+      tall: raw.tall !== false,
+      name: typeof raw.name === "string" ? raw.name : undefined,
+      playlist_limit,
+      show_up_next: raw.show_up_next !== false,
+    };
+  }
 
   @state() private _playlists: BrowseMedia[] = [];
 
@@ -489,7 +521,11 @@ export class SpotifySpotlightCard extends LitElement {
   }
 
   private get _entity(): HassEntity | undefined {
-    return this.hass?.states[this.config?.entity];
+    const id = this.config?.entity;
+    if (!this.hass || !id) {
+      return undefined;
+    }
+    return this.hass.states[id];
   }
 
   private _pic(): string | undefined {
@@ -505,11 +541,12 @@ export class SpotifySpotlightCard extends LitElement {
     service: string,
     data: Record<string, unknown> = {},
   ): Promise<void> {
-    if (!this.hass) {
+    const eid = this.config?.entity;
+    if (!this.hass || !eid) {
       return;
     }
     await this.hass.callService("media_player", service, {
-      entity_id: this.config.entity,
+      entity_id: eid,
       ...data,
     });
   }
@@ -550,12 +587,13 @@ export class SpotifySpotlightCard extends LitElement {
     media_content_type: string | null,
     media_content_id: string | null,
   ): Promise<BrowseMedia> {
-    if (!this.hass) {
+    const eid = this.config?.entity;
+    if (!this.hass || !eid) {
       throw new Error("No connection");
     }
     const result = await this.hass.callWS({
       type: "browse_media",
-      entity_id: this.config.entity,
+      entity_id: eid,
       media_content_type,
       media_content_id,
     });
@@ -563,11 +601,12 @@ export class SpotifySpotlightCard extends LitElement {
   }
 
   private async _playPlaylist(child: BrowseMedia): Promise<void> {
-    if (!child.media_content_id || !child.media_content_type) {
+    const eid = this.config?.entity;
+    if (!child.media_content_id || !child.media_content_type || !eid) {
       return;
     }
     await this.hass?.callService("media_player", "play_media", {
-      entity_id: this.config.entity,
+      entity_id: eid,
       media_content_id: child.media_content_id,
       media_content_type: child.media_content_type,
     });

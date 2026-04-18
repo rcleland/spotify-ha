@@ -72,6 +72,148 @@ const t=t=>(e,o)=>{ void 0!==o?o.addInitializer(()=>{customElements.define(t,e);
  * SPDX-License-Identifier: BSD-3-Clause
  */function r(r){return n({...r,state:true,attribute:false})}
 
+let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
+    constructor() {
+        super(...arguments);
+        this._config = {};
+    }
+    static { this.styles = i$3 `
+    .card-config {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      padding: 8px 0;
+    }
+    ha-formfield {
+      display: flex;
+      align-items: center;
+      --ha-formfield-row-gap: 8px;
+    }
+    ha-textfield {
+      width: 100%;
+    }
+    .hint {
+      font-size: 0.85rem;
+      color: var(--secondary-text-color);
+      margin: -8px 0 0;
+    }
+  `; }
+    setConfig(config) {
+        this._config = { ...config };
+    }
+    render() {
+        if (!this.hass) {
+            return b `<div class="card-config">Loading…</div>`;
+        }
+        const pl = this._config.playlist_limit !== undefined &&
+            Number.isFinite(this._config.playlist_limit)
+            ? String(this._config.playlist_limit)
+            : "24";
+        return b `
+      <div class="card-config">
+        <ha-entity-picker
+          .hass=${this.hass}
+          .value=${this._config.entity ?? ""}
+          .label=${"Spotify media player"}
+          .includeDomains=${["media_player"]}
+          allow-custom-entity
+          @value-changed=${this._entityChanged}
+        ></ha-entity-picker>
+        <p class="hint">
+          Choose the Spotify Connect <strong>media_player</strong> entity from this
+          integration.
+        </p>
+
+        <ha-textfield
+          label="Card title (optional)"
+          .value=${this._config.name ?? ""}
+          @input=${this._nameChanged}
+        ></ha-textfield>
+
+        <ha-textfield
+          label="Max playlist chips"
+          type="number"
+          inputMode="numeric"
+          min="1"
+          max="500"
+          .value=${pl}
+          @input=${this._playlistLimitChanged}
+        ></ha-textfield>
+
+        <ha-formfield label="Tall layout (fill panel height)">
+          <ha-switch
+            .checked=${this._config.tall !== false}
+            @change=${this._tallChanged}
+          ></ha-switch>
+        </ha-formfield>
+
+        <ha-formfield label="Show “Up next” (needs custom integration queue attributes)">
+          <ha-switch
+            .checked=${this._config.show_up_next !== false}
+            @change=${this._upNextChanged}
+          ></ha-switch>
+        </ha-formfield>
+      </div>
+    `;
+    }
+    _fire(config) {
+        this.dispatchEvent(new CustomEvent("config-changed", {
+            bubbles: true,
+            composed: true,
+            detail: { config },
+        }));
+    }
+    _merge(partial) {
+        const base = {
+            type: "custom:spotify-spotlight-card",
+            entity: typeof this._config.entity === "string" ? this._config.entity : "",
+            tall: this._config.tall !== false,
+            name: typeof this._config.name === "string" ? this._config.name : undefined,
+            playlist_limit: typeof this._config.playlist_limit === "number"
+                ? this._config.playlist_limit
+                : undefined,
+            show_up_next: this._config.show_up_next !== false,
+        };
+        this._fire({ ...base, ...partial });
+    }
+    _entityChanged(ev) {
+        ev.stopPropagation();
+        const entity = ev.detail.value ?? "";
+        this._merge({ entity });
+    }
+    _nameChanged(ev) {
+        const t = ev.target;
+        const name = t.value.trim();
+        this._merge({ name: name.length ? name : undefined });
+    }
+    _playlistLimitChanged(ev) {
+        const t = ev.target;
+        const n = parseInt(t.value, 10);
+        if (!Number.isFinite(n) || n < 1) {
+            this._merge({ playlist_limit: undefined });
+            return;
+        }
+        this._merge({ playlist_limit: Math.min(500, n) });
+    }
+    _tallChanged(ev) {
+        const el = ev.currentTarget;
+        this._merge({ tall: el.checked });
+    }
+    _upNextChanged(ev) {
+        const el = ev.currentTarget;
+        this._merge({ show_up_next: el.checked });
+    }
+};
+__decorate([
+    n({ attribute: false })
+], SpotifySpotlightCardEditor.prototype, "hass", void 0);
+__decorate([
+    n({ type: Object })
+], SpotifySpotlightCardEditor.prototype, "_config", void 0);
+SpotifySpotlightCardEditor = __decorate([
+    t("spotify-spotlight-card-editor")
+], SpotifySpotlightCardEditor);
+
 window.customCards = window.customCards ?? [];
 window.customCards.push({
     type: "spotify-spotlight-card",
@@ -94,6 +236,38 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             entity: "",
             tall: true,
             show_up_next: true,
+        };
+    }
+    static getConfigElement() {
+        return document.createElement("spotify-spotlight-card-editor");
+    }
+    /** Home Assistant invokes this — not Lit's @property setter. */
+    setConfig(config) {
+        if (!config || typeof config !== "object") {
+            throw new Error("Invalid configuration");
+        }
+        const raw = config;
+        const entityRaw = raw.entity;
+        if (entityRaw !== undefined &&
+            entityRaw !== null &&
+            typeof entityRaw !== "string") {
+            throw new Error("entity must be a string");
+        }
+        const entity = typeof entityRaw === "string" ? entityRaw.trim() : "";
+        const lim = raw.playlist_limit;
+        const playlist_limit = typeof lim === "number" &&
+            Number.isFinite(lim) &&
+            lim >= 1 &&
+            lim <= 500
+            ? Math.floor(lim)
+            : undefined;
+        this.config = {
+            type: "custom:spotify-spotlight-card",
+            entity,
+            tall: raw.tall !== false,
+            name: typeof raw.name === "string" ? raw.name : undefined,
+            playlist_limit,
+            show_up_next: raw.show_up_next !== false,
         };
     }
     static { this.styles = i$3 `
@@ -488,7 +662,11 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
         }
     }
     get _entity() {
-        return this.hass?.states[this.config?.entity];
+        const id = this.config?.entity;
+        if (!this.hass || !id) {
+            return undefined;
+        }
+        return this.hass.states[id];
     }
     _pic() {
         const a = this._entity?.attributes;
@@ -499,11 +677,12 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
         return p?.length ? p : undefined;
     }
     async _callService(service, data = {}) {
-        if (!this.hass) {
+        const eid = this.config?.entity;
+        if (!this.hass || !eid) {
             return;
         }
         await this.hass.callService("media_player", service, {
-            entity_id: this.config.entity,
+            entity_id: eid,
             ...data,
         });
     }
@@ -535,23 +714,25 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
         }
     }
     async _browse(media_content_type, media_content_id) {
-        if (!this.hass) {
+        const eid = this.config?.entity;
+        if (!this.hass || !eid) {
             throw new Error("No connection");
         }
         const result = await this.hass.callWS({
             type: "browse_media",
-            entity_id: this.config.entity,
+            entity_id: eid,
             media_content_type,
             media_content_id,
         });
         return result;
     }
     async _playPlaylist(child) {
-        if (!child.media_content_id || !child.media_content_type) {
+        const eid = this.config?.entity;
+        if (!child.media_content_id || !child.media_content_type || !eid) {
             return;
         }
         await this.hass?.callService("media_player", "play_media", {
-            entity_id: this.config.entity,
+            entity_id: eid,
             media_content_id: child.media_content_id,
             media_content_type: child.media_content_type,
         });
