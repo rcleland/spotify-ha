@@ -1,14 +1,14 @@
 {
   "domain": "spotify",
   "name": "Spotify",
-  "version": "2026.4.18",
-  "documentation": "https://github.com/rcleland/spotify-ha",
-  "issue_tracker": "https://github.com/rcleland/spotify-ha/issues",
-  "codeowners": [],
+  "codeowners": ["@rcleland"],
   "config_flow": true,
   "dependencies": ["application_credentials"],
+  "documentation": "https://github.com/rcleland/spotify-ha",
   "integration_type": "service",
   "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/rcleland/spotify-ha/issues",
   "loggers": ["spotifyaio"],
-  "requirements": ["spotifyaio==2.0.2"]
+  "requirements": ["spotifyaio==2.0.2"],
+  "version": "2026.4.18"
 }

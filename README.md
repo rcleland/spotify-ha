@@ -65,12 +65,22 @@ Commit **`dist/spotify-spotlight-card.js`** at the repo root so Dashboard instal
 
 CI runs [**hacs/action**](https://github.com/hacs/action) (integration) and **hassfest** on push/PR.
 
+### GitHub repository settings (for green HACS / CI checks)
+
+These live on GitHub (not in git) and are required by [**check-repository**](https://hacs.xyz/docs/publish/include/#check-repository):
+
+- **Topics** — add at least one topic under **Settings → General**. Common choices: `home-assistant`, `hass`, `integration`, `spotify`, `lovelace`.
+- **Description** — short one-line description on the repo main page.
+- **Issues** — leave enabled (**Settings → General → Features**).
+
+Brand artwork for the integration lives in [`custom_components/spotify/brand/`](custom_components/spotify/brand/) so [check-brands](https://hacs.xyz/docs/publish/include/#check-brands) passes without relying on the core `spotify` entry in [home-assistant/brands](https://github.com/home-assistant/brands).
+
 ---
 
 ## Contents
 
 | Path | Purpose |
 |------|---------|
-| [`custom_components/spotify/`](custom_components/spotify/) | Custom integration |
+| [`custom_components/spotify/`](custom_components/spotify/) | Custom integration · [`brand/`](custom_components/spotify/brand/) icons for HACS |
 | [`spotify-spotlight-card/`](spotify-spotlight-card/) | Card source + nested build output |
 | [`dist/spotify-spotlight-card.js`](dist/spotify-spotlight-card.js) | HACS-facing bundle (synced from the card build) |
