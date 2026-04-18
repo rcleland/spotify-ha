@@ -26,6 +26,10 @@ declare global {
       preview?: boolean;
     }>;
   }
+
+  interface HTMLElementTagNameMap {
+    "ha-media-player-browse": HTMLElement;
+  }
 }
 
 interface HassEntity {
@@ -44,21 +48,6 @@ interface HomeAssistant {
 
 /** Same as Home Assistant `MediaPlayerEntityFeature.BROWSE_MEDIA` */
 const MEDIA_PLAYER_FEATURE_BROWSE_MEDIA = 1 << 17;
-
-/** Navigate like `navigate()` in HA frontend (opens Media panel for entity). */
-function navigateFrontend(path: string): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-  window.history.pushState(null, "", path);
-  window.dispatchEvent(
-    new CustomEvent("location-changed", {
-      bubbles: true,
-      composed: true,
-      detail: { replace: false },
-    }),
-  );
-}
 
 window.customCards = window.customCards ?? [];
 window.customCards.push({
@@ -136,6 +125,8 @@ export class SpotifySpotlightCard extends LitElement {
 
   private _tickTimer: ReturnType<typeof setInterval> | undefined;
 
+  @state() private _mediaOverlayOpen = false;
+
   static styles: CSSResultGroup = css`
     :host {
       display: block;
@@ -154,6 +145,13 @@ export class SpotifySpotlightCard extends LitElement {
 
     :host([data-tall]) {
       min-height: calc(100vh - 140px);
+    }
+
+    .card-shell {
+      position: relative;
+      display: block;
+      height: 100%;
+      min-height: inherit;
     }
 
     .wrap {
@@ -208,30 +206,21 @@ export class SpotifySpotlightCard extends LitElement {
       box-sizing: border-box;
     }
 
-    /** Wraps now-playing meta + optional up-next (side-by-side or stacked). */
-    .now-playing-row {
-      flex: 1 1 220px;
-      min-width: 0;
-      display: flex;
-      flex-flow: row wrap;
-      align-items: center;
-      gap: 14px 18px;
-    }
-
-    .top.cover-center .now-playing-row {
-      width: 100%;
-      justify-content: center;
-    }
-
+    /** Pinned inside .wrap — does not participate in meta/center layout. */
     .up-next {
-      position: relative;
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      left: auto;
+      bottom: auto;
       display: flex;
       align-items: center;
       gap: 12px;
       padding: 10px 14px 10px 10px;
-      flex: 0 1 auto;
-      max-width: min(320px, 100%);
+      margin: 0;
+      max-width: min(300px, calc(100% - 48px));
       box-sizing: border-box;
+      z-index: 8;
       background: var(--spot-glass-strong);
       backdrop-filter: blur(22px);
       -webkit-backdrop-filter: blur(22px);
@@ -305,12 +294,8 @@ export class SpotifySpotlightCard extends LitElement {
 
     .top.cover-center .meta {
       align-items: center;
+      width: 100%;
       text-align: center;
-    }
-
-    .top.cover-center .now-playing-row .meta {
-      flex: 1 1 min(420px, 100%);
-      max-width: min(420px, 100%);
     }
 
     .top.cover-center .progress-wrap {
@@ -518,6 +503,70 @@ export class SpotifySpotlightCard extends LitElement {
       transform: scale(0.99);
     }
 
+    .media-browser-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 10000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: max(12px, env(safe-area-inset-top, 0px))
+        max(12px, env(safe-area-inset-right, 0px))
+        max(12px, env(safe-area-inset-bottom, 0px))
+        max(12px, env(safe-area-inset-left, 0px));
+      box-sizing: border-box;
+      background: rgba(8, 8, 14, 0.62);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+    }
+
+    .media-browser-panel {
+      display: flex;
+      flex-direction: column;
+      width: min(920px, 100%);
+      height: min(88vh, 840px);
+      max-height: 100%;
+      overflow: hidden;
+      border-radius: 18px;
+      background: var(--card-background-color, rgb(28, 28, 36));
+      color: var(--primary-text-color, #e8e8ea);
+      box-shadow: 0 28px 80px rgba(0, 0, 0, 0.65);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .media-browser-toolbar {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .media-browser-toolbar button {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 16px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      background: rgba(255, 255, 255, 0.08);
+      color: inherit;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .media-browser-toolbar button:hover {
+      background: rgba(255, 255, 255, 0.14);
+    }
+
+    .media-browser-panel ha-media-player-browse {
+      flex: 1 1 auto;
+      min-height: 0;
+      width: 100%;
+    }
+
     .section-title {
       margin: 0 0 8px;
       font-size: 0.85rem;
@@ -537,8 +586,60 @@ export class SpotifySpotlightCard extends LitElement {
   }
 
   override disconnectedCallback(): void {
+    window.removeEventListener("keydown", this._onMediaOverlayEscape);
     this._stopTimers();
     super.disconnectedCallback();
+  }
+
+  private readonly _onMediaOverlayEscape = (ev: KeyboardEvent): void => {
+    if (ev.key === "Escape") {
+      this._closeMediaBrowserOverlay();
+    }
+  };
+
+  private _openMediaBrowserOverlay(): void {
+    if (!this.config?.entity || !this.hass) {
+      return;
+    }
+    if (this._mediaOverlayOpen) {
+      return;
+    }
+    this._mediaOverlayOpen = true;
+    window.addEventListener("keydown", this._onMediaOverlayEscape);
+  }
+
+  private _closeMediaBrowserOverlay(): void {
+    if (!this._mediaOverlayOpen) {
+      return;
+    }
+    this._mediaOverlayOpen = false;
+    window.removeEventListener("keydown", this._onMediaOverlayEscape);
+  }
+
+  private _onMediaBrowseBackdrop(ev: Event): void {
+    if (ev.target === ev.currentTarget) {
+      this._closeMediaBrowserOverlay();
+    }
+  }
+
+  private _onBrowseMediaPicked(ev: Event): void {
+    ev.stopPropagation();
+    const eid = this.config?.entity;
+    if (!eid || !this.hass) {
+      return;
+    }
+    const detail = (ev as CustomEvent<{
+      item?: { media_content_id?: string; media_content_type?: string };
+    }>).detail;
+    const item = detail?.item;
+    if (!item?.media_content_id || !item?.media_content_type) {
+      return;
+    }
+    void this.hass.callService("media_player", "play_media", {
+      entity_id: eid,
+      media_content_id: item.media_content_id,
+      media_content_type: item.media_content_type,
+    });
   }
 
   updated(changed: Map<string, unknown>): void {
@@ -602,14 +703,6 @@ export class SpotifySpotlightCard extends LitElement {
         entity_id: id,
       });
     }, pollMs);
-  }
-
-  private _openHaMediaBrowser(): void {
-    const id = this.config?.entity;
-    if (!id) {
-      return;
-    }
-    navigateFrontend(`/media-browser/${id}`);
   }
 
   private get _entity(): HassEntity | undefined {
@@ -721,24 +814,24 @@ export class SpotifySpotlightCard extends LitElement {
         (supportedFeat & MEDIA_PLAYER_FEATURE_BROWSE_MEDIA) !== 0);
 
     return html`
-      <div class="wrap">
-        <div
-          class="backdrop ${pic ? "" : "backdrop-fallback"}"
-          style=${pic ? `background-image:url("${pic}")` : ""}
-        ></div>
-        <div class="scrim"></div>
-        <div class="body">
-          <div class="top ${coverClass}">
-            <div class="art">
-              ${pic
-                ? html`<img src=${pic} alt="" />`
-                : html`<div
-                    style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:3rem;opacity:.35"
-                  >
-                    ♪
-                  </div>`}
-            </div>
-            <div class="now-playing-row">
+      <div class="card-shell">
+        <div class="wrap">
+          <div
+            class="backdrop ${pic ? "" : "backdrop-fallback"}"
+            style=${pic ? `background-image:url("${pic}")` : ""}
+          ></div>
+          <div class="scrim"></div>
+          <div class="body">
+            <div class="top ${coverClass}">
+              <div class="art">
+                ${pic
+                  ? html`<img src=${pic} alt="" />`
+                  : html`<div
+                      style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:3rem;opacity:.35"
+                    >
+                      ♪
+                    </div>`}
+              </div>
               <div class="meta">
                 ${this.config.name
                   ? html`<span class="label">${this.config.name}</span>`
@@ -762,36 +855,9 @@ export class SpotifySpotlightCard extends LitElement {
                     `
                   : nothing}
               </div>
-              ${hasUpNext
-                ? html`
-                    <aside class="up-next" aria-label="Up next">
-                      ${nextThumb
-                        ? html`<img
-                              class="up-next-cover"
-                              src=${nextThumb}
-                              alt=""
-                              loading="lazy"
-                            />`
-                        : html`<div
-                            class="up-next-cover"
-                            style="display:flex;align-items:center;justify-content:center;font-size:1.5rem;opacity:.5"
-                          >
-                            <ha-icon icon="mdi:music-note"></ha-icon>
-                          </div>`}
-                      <div class="up-next-copy">
-                        <p class="up-next-label">Up next</p>
-                        <p class="up-next-title">${nextTitle}</p>
-                        ${nextArtist
-                          ? html`<p class="up-next-artist">${nextArtist}</p>`
-                          : nothing}
-                      </div>
-                    </aside>
-                  `
-                : nothing}
             </div>
-          </div>
 
-          <div class="glass-panel controls-main">
+            <div class="glass-panel controls-main">
             <button
               class="ctrl-btn"
               @click=${() => this._callService("media_previous_track")}
@@ -905,21 +971,78 @@ export class SpotifySpotlightCard extends LitElement {
             </div>
           </div>
 
-          ${showBrowseBtn
+            ${showBrowseBtn
+              ? html`
+                  <div class="glass-panel">
+                    <button
+                      type="button"
+                      class="browse-media-btn"
+                      @click=${() => this._openMediaBrowserOverlay()}
+                    >
+                      <ha-icon icon="mdi:play-box-multiple-outline"></ha-icon>
+                      <span>Media library</span>
+                    </button>
+                  </div>
+                `
+              : nothing}
+          </div>
+          ${hasUpNext
             ? html`
-                <div class="glass-panel">
-                  <button
-                    type="button"
-                    class="browse-media-btn"
-                    @click=${() => this._openHaMediaBrowser()}
-                  >
-                    <ha-icon icon="mdi:play-box-multiple-outline"></ha-icon>
-                    <span>Media library</span>
-                  </button>
-                </div>
+                <aside class="up-next" aria-label="Up next">
+                  ${nextThumb
+                    ? html`<img
+                          class="up-next-cover"
+                          src=${nextThumb}
+                          alt=""
+                          loading="lazy"
+                        />`
+                    : html`<div
+                        class="up-next-cover"
+                        style="display:flex;align-items:center;justify-content:center;font-size:1.5rem;opacity:.5"
+                      >
+                        <ha-icon icon="mdi:music-note"></ha-icon>
+                      </div>`}
+                  <div class="up-next-copy">
+                    <p class="up-next-label">Up next</p>
+                    <p class="up-next-title">${nextTitle}</p>
+                    ${nextArtist
+                      ? html`<p class="up-next-artist">${nextArtist}</p>`
+                      : nothing}
+                  </div>
+                </aside>
               `
             : nothing}
         </div>
+        ${this._mediaOverlayOpen && this.hass && this.config.entity
+          ? html`
+              <div
+                class="media-browser-overlay"
+                @click=${this._onMediaBrowseBackdrop}
+              >
+                <div
+                  class="media-browser-panel"
+                  @click=${(e: Event) => e.stopPropagation()}
+                >
+                  <div class="media-browser-toolbar">
+                    <button
+                      type="button"
+                      @click=${() => this._closeMediaBrowserOverlay()}
+                    >
+                      <ha-icon icon="mdi:close"></ha-icon>
+                      Close
+                    </button>
+                  </div>
+                  <ha-media-player-browse
+                    .hass=${this.hass}
+                    .entityId=${this.config.entity}
+                    .action=${"play"}
+                    .dialog=${true}
+                    @media-picked=${this._onBrowseMediaPicked}
+                  ></ha-media-player-browse>
+                </div>
+              </div>
+            `
+          : nothing}
       </div>
     `;
   }
