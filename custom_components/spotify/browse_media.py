@@ -341,8 +341,15 @@ def _playlist_api_row_to_payload(row: dict[str, Any]) -> ItemPayload | None:
 async def _load_playlist_track_payloads(
     spotify: SpotifyClient, media_content_id: str
 ) -> list[ItemPayload]:
-    """Paged playlist tracks with market + relaxed parsing (followed / others' playlists)."""
-    market = await _spotify_user_market(spotify)
+    """Paged playlist tracks with market + relaxed parsing (followed / others' playlists).
+
+    Non-owned playlists (editorial, friends', etc.) frequently contain tracks
+    that are region-restricted. Without a `market`, Spotify returns those rows
+    with `track: null`, and our row parser drops them — leaving an empty list.
+    Using `market=from_token` makes Spotify substitute / filter using the
+    authenticated user's country automatically, so the playable rows survive.
+    """
+    market = await _spotify_user_market(spotify) or "from_token"
     identifier = get_identifier(media_content_id)
     raw_get = getattr(spotify, "_get", None)
     payloads: list[ItemPayload] = []
@@ -354,12 +361,13 @@ async def _load_playlist_track_payloads(
                 "limit": BROWSE_LIMIT,
                 "offset": offset,
                 "additional_types": "track,episode",
+                "market": market,
             }
-            if market:
-                params["market"] = market
             try:
                 raw = await raw_get(
-                    f"v1/playlists/{identifier}/items",
+                    # Spotify's canonical "Get Playlist Items" endpoint is
+                    # `/tracks` (despite the operation name).
+                    f"v1/playlists/{identifier}/tracks",
                     params=params,
                 )
             except Exception:

@@ -9,7 +9,7 @@ import {
   type CSSResultGroup,
   type TemplateResult,
 } from "lit";
-import { customElement, property } from "lit/decorators.js";
+import { customElement, property, state } from "lit/decorators.js";
 
 import type {
   CornerTemperatureUnit,
@@ -17,6 +17,24 @@ import type {
   MetaVerticalAlign,
   SpotifySpotlightCardConfig,
 } from "./spotify-config";
+
+/**
+ * Modern HA frontend exposes `loadCardHelpers()` on `window`. Calling it and
+ * instantiating an `entities` card is the canonical way to force HA to
+ * register `<ha-entity-picker>` (and friends) for use in custom card editors.
+ */
+declare global {
+  interface Window {
+    loadCardHelpers?: () => Promise<{
+      createCardElement: (config: {
+        type: string;
+        [key: string]: unknown;
+      }) => HTMLElement & {
+        constructor?: { getConfigElement?: () => Promise<unknown> };
+      };
+    }>;
+  }
+}
 
 /** Minimal `hass` shape for `ha-entity-picker` — HA passes the full object. */
 export interface HomeAssistantStub {
@@ -54,6 +72,9 @@ export class SpotifySpotlightCardEditor extends LitElement {
   @property({ attribute: false, type: Object }) public hass?: HomeAssistantStub;
 
   @property({ type: Object }) private _config: Partial<SpotifySpotlightCardConfig> = {};
+
+  /** True once `<ha-entity-picker>` is registered as a custom element. */
+  @state() private _entityPickerReady = false;
 
   static styles: CSSResultGroup = css`
     .card-config {
@@ -123,9 +144,92 @@ export class SpotifySpotlightCardEditor extends LitElement {
     this.requestUpdate();
   }
 
-  protected render(): TemplateResult {
-    const hassForPickers = (this.hass ?? { states: {} }) as HomeAssistantStub;
+  override connectedCallback(): void {
+    super.connectedCallback();
+    void this._ensureEntityPicker();
+  }
 
+  /**
+   * Force HA to register `<ha-entity-picker>` so it actually renders inside
+   * our editor. Without this, the element stays an unknown tag with zero
+   * height — the user sees the labels but no dropdown.
+   */
+  /**
+   * Render an entity picker if HA's `<ha-entity-picker>` is registered;
+   * otherwise fall back to a plain text input so the user can always type
+   * the entity ID. The fallback emits the same `value-changed` event shape
+   * the picker handlers expect.
+   */
+  private _renderEntityField(opts: {
+    label: string;
+    value: string;
+    placeholder?: string;
+    includeDomains?: string[];
+    onChange: (entityId: string) => void;
+  }): TemplateResult {
+    const fire = (entityId: string): void =>
+      opts.onChange(entityId.trim());
+
+    if (this._entityPickerReady) {
+      return html`
+        <ha-entity-picker
+          .hass=${(this.hass ?? { states: {} }) as HomeAssistantStub as never}
+          .value=${opts.value}
+          .label=${opts.label}
+          .includeDomains=${opts.includeDomains ?? null}
+          allow-custom-entity
+          @value-changed=${(ev: CustomEvent<{ value?: string }>) => {
+            ev.stopPropagation();
+            fire(typeof ev.detail?.value === "string" ? ev.detail.value : "");
+          }}
+        ></ha-entity-picker>
+      `;
+    }
+
+    return html`
+      <ha-textfield
+        .label=${opts.label + " (entity ID)"}
+        .placeholder=${opts.placeholder ?? "domain.entity_id"}
+        .value=${opts.value}
+        @change=${(ev: Event) =>
+          fire((ev.target as HTMLInputElement).value)}
+      ></ha-textfield>
+      <p class="hint">
+        Picker is loading… Type the entity ID for now (it works the same way).
+      </p>
+    `;
+  }
+
+  private async _ensureEntityPicker(): Promise<void> {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (customElements.get("ha-entity-picker")) {
+      this._entityPickerReady = true;
+      return;
+    }
+    try {
+      const helpers = await window.loadCardHelpers?.();
+      if (helpers) {
+        const card = helpers.createCardElement({
+          type: "entities",
+          entities: [],
+        });
+        const ctor = card?.constructor as
+          | { getConfigElement?: () => Promise<unknown> }
+          | undefined;
+        if (ctor?.getConfigElement) {
+          await ctor.getConfigElement();
+        }
+      }
+      await customElements.whenDefined("ha-entity-picker");
+      this._entityPickerReady = true;
+    } catch {
+      this._entityPickerReady = false;
+    }
+  }
+
+  protected render(): TemplateResult {
     const poll =
       typeof this._config.poll_interval_seconds === "number" &&
       Number.isFinite(this._config.poll_interval_seconds)
@@ -197,14 +301,13 @@ export class SpotifySpotlightCardEditor extends LitElement {
 
         <div class="section-title">Spotify player</div>
         <div class="field-label">Media player entity</div>
-        <ha-entity-picker
-          .hass=${hassForPickers as never}
-          .value=${this._config.entity ?? ""}
-          .label=${"Spotify media_player"}
-          .includeDomains=${["media_player"]}
-          allow-custom-entity
-          @value-changed=${this._entityChanged}
-        ></ha-entity-picker>
+        ${this._renderEntityField({
+          label: "Spotify media_player",
+          value: this._config.entity ?? "",
+          placeholder: "media_player.spotify",
+          includeDomains: ["media_player"],
+          onChange: (id) => this._merge({ entity: id }),
+        })}
         <p class="hint">
           Choose the Spotify Connect <strong>media_player</strong>. You can also type
           an entity ID if it does not appear in the list.
@@ -395,14 +498,16 @@ export class SpotifySpotlightCardEditor extends LitElement {
           ></ha-switch>
         </ha-formfield>
         <div class="field-label">Temperature entity</div>
-        <ha-entity-picker
-          .hass=${hassForPickers as never}
-          .value=${this._config.corner_temperature_entity ?? ""}
-          .label=${"Weather, sensor, or input_number"}
-          .includeDomains=${["weather", "sensor", "input_number"]}
-          allow-custom-entity
-          @value-changed=${this._cornerTempEntityChanged}
-        ></ha-entity-picker>
+        ${this._renderEntityField({
+          label: "Weather, sensor, or input_number",
+          value: this._config.corner_temperature_entity ?? "",
+          placeholder: "weather.met_no_home",
+          includeDomains: ["weather", "sensor", "input_number"],
+          onChange: (id) =>
+            this._merge({
+              corner_temperature_entity: id.length ? id : undefined,
+            }),
+        })}
         <p class="hint">
           <strong>weather</strong> uses the <code>temperature</code> attribute;
           <strong>sensor</strong> / <strong>input_number</strong> use the numeric state.
@@ -437,14 +542,16 @@ export class SpotifySpotlightCardEditor extends LitElement {
           ></ha-switch>
         </ha-formfield>
         <div class="field-label">Weather entity</div>
-        <ha-entity-picker
-          .hass=${hassForPickers as never}
-          .value=${this._config.corner_weather_entity ?? ""}
-          .label=${"weather.* (e.g. Met.no, Tempest)"}
-          .includeDomains=${["weather"]}
-          allow-custom-entity
-          @value-changed=${this._cornerWeatherEntityChanged}
-        ></ha-entity-picker>
+        ${this._renderEntityField({
+          label: "weather.* (e.g. Met.no, Tempest)",
+          value: this._config.corner_weather_entity ?? "",
+          placeholder: "weather.met_no_home",
+          includeDomains: ["weather"],
+          onChange: (id) =>
+            this._merge({
+              corner_weather_entity: id.length ? id : undefined,
+            }),
+        })}
         <p class="hint">
           Required to show the weather state and icon. The state name uses
           Home Assistant’s own translation, so Met.no’s
@@ -589,13 +696,6 @@ export class SpotifySpotlightCardEditor extends LitElement {
     this._fire(full);
   }
 
-  private _entityChanged(ev: CustomEvent<{ value?: string }>): void {
-    ev.stopPropagation();
-    const raw = ev.detail?.value;
-    const entity = typeof raw === "string" ? raw : "";
-    this._merge({ entity });
-  }
-
   private _nameChanged(ev: Event): void {
     const t = ev.target as unknown as HTMLInputElement;
     const name = t.value.trim();
@@ -730,13 +830,6 @@ export class SpotifySpotlightCardEditor extends LitElement {
     this._merge({ show_corner_weather_icon: el.checked });
   }
 
-  private _cornerWeatherEntityChanged(ev: CustomEvent<{ value?: string }>): void {
-    ev.stopPropagation();
-    const raw = ev.detail?.value;
-    const v = typeof raw === "string" ? raw.trim() : "";
-    this._merge({ corner_weather_entity: v.length ? v : undefined });
-  }
-
   private _useTempEntityForWeather(): void {
     const t = (this._config.corner_temperature_entity ?? "").trim();
     if (!t.startsWith("weather.")) {
@@ -748,18 +841,6 @@ export class SpotifySpotlightCardEditor extends LitElement {
   private _cornerTempEnabledChanged(ev: Event): void {
     const el = ev.currentTarget as HTMLElement & { checked: boolean };
     this._merge({ show_corner_temperature: el.checked });
-  }
-
-  private _cornerTempEntityChanged(ev: CustomEvent<{ value?: string }>): void {
-    ev.stopPropagation();
-    const raw = ev.detail?.value;
-    const corner_temperature_entity =
-      typeof raw === "string" ? raw.trim() : "";
-    this._merge({
-      corner_temperature_entity: corner_temperature_entity.length
-        ? corner_temperature_entity
-        : undefined,
-    });
   }
 
   private _cornerTempUnitChanged(ev: Event): void {
