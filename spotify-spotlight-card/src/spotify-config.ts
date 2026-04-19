@@ -73,4 +73,15 @@ export interface SpotifySpotlightCardConfig {
    * Scale for the top-left time & temperature pane (100 = default). Clamped 50–300.
    */
   corner_climate_scale_percent?: number;
+  /**
+   * Blur radius (in CSS pixels) applied to the album-art backdrop. Clamped
+   * 0–80; default 36.
+   */
+  background_blur_px?: number;
+  /**
+   * Opacity of the album-art backdrop layer in percent. Clamped 0–100;
+   * default 100. Lowering it dims the artwork without changing the dark
+   * scrim that keeps text readable.
+   */
+  background_opacity_percent?: number;
 }

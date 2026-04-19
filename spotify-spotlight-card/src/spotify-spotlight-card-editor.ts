@@ -154,6 +154,18 @@ export class SpotifySpotlightCardEditor extends LitElement {
         ? String(Math.round(this._config.corner_climate_scale_percent))
         : "100";
 
+    const bgBlur =
+      typeof this._config.background_blur_px === "number" &&
+      Number.isFinite(this._config.background_blur_px)
+        ? String(Math.round(this._config.background_blur_px))
+        : "36";
+
+    const bgOpacity =
+      typeof this._config.background_opacity_percent === "number" &&
+      Number.isFinite(this._config.background_opacity_percent)
+        ? String(Math.round(this._config.background_opacity_percent))
+        : "100";
+
     return html`
       <div class="card-config">
         ${!this.hass

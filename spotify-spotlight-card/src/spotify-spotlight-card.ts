@@ -118,6 +118,8 @@ export class SpotifySpotlightCard extends LitElement {
       source_tablet_mode: false,
       up_next_scale_percent: 100,
       corner_climate_scale_percent: 100,
+      background_blur_px: 36,
+      background_opacity_percent: 100,
     };
   }
 
@@ -197,6 +199,18 @@ export class SpotifySpotlightCard extends LitElement {
       corner_climate_scale_percent = Math.min(300, Math.max(50, Math.round(ccspRaw)));
     }
 
+    const bbpRaw = raw.background_blur_px;
+    let background_blur_px = 36;
+    if (typeof bbpRaw === "number" && Number.isFinite(bbpRaw)) {
+      background_blur_px = Math.min(80, Math.max(0, Math.round(bbpRaw)));
+    }
+
+    const bopRaw = raw.background_opacity_percent;
+    let background_opacity_percent = 100;
+    if (typeof bopRaw === "number" && Number.isFinite(bopRaw)) {
+      background_opacity_percent = Math.min(100, Math.max(0, Math.round(bopRaw)));
+    }
+
     this.config = {
       type: "custom:spotify-spotlight-card",
       entity,
@@ -225,6 +239,8 @@ export class SpotifySpotlightCard extends LitElement {
       source_tablet_mode: raw.source_tablet_mode === true,
       up_next_scale_percent,
       corner_climate_scale_percent,
+      background_blur_px,
+      background_opacity_percent,
     };
   }
 
@@ -247,6 +263,8 @@ export class SpotifySpotlightCard extends LitElement {
       --spot-cover-scale: 1;
       --spot-up-next-scale: 1;
       --spot-corner-climate-scale: 1;
+      --spot-backdrop-blur: 36px;
+      --spot-backdrop-opacity: 1;
       color: var(--spot-text);
       font-family: var(--ha-font-family-body, ui-sans-serif, system-ui);
       -webkit-font-smoothing: antialiased;
@@ -292,7 +310,8 @@ export class SpotifySpotlightCard extends LitElement {
       inset: -24px;
       background-size: cover;
       background-position: center;
-      filter: blur(36px) saturate(1.15);
+      filter: blur(var(--spot-backdrop-blur, 36px)) saturate(1.15);
+      opacity: var(--spot-backdrop-opacity, 1);
       transform: scale(1.06);
       z-index: 0;
     }
@@ -952,6 +971,20 @@ export class SpotifySpotlightCard extends LitElement {
       cornerScale = Math.min(3, Math.max(0.5, cc / 100));
     }
     this.style.setProperty("--spot-corner-climate-scale", String(cornerScale));
+
+    const bb = this.config?.background_blur_px;
+    let blurPx = 36;
+    if (typeof bb === "number" && Number.isFinite(bb)) {
+      blurPx = Math.min(80, Math.max(0, bb));
+    }
+    this.style.setProperty("--spot-backdrop-blur", `${blurPx}px`);
+
+    const bo = this.config?.background_opacity_percent;
+    let opacity = 1;
+    if (typeof bo === "number" && Number.isFinite(bo)) {
+      opacity = Math.min(1, Math.max(0, bo / 100));
+    }
+    this.style.setProperty("--spot-backdrop-opacity", String(opacity));
   }
 
   private _stopTimers(): void {
