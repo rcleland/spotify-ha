@@ -196,21 +196,22 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
         const filtered = domains?.length
             ? allIds.filter((id) => domains.some((d) => id.startsWith(`${d}.`)))
             : allIds;
-        const listId = `ent-list-${Math.random().toString(36).slice(2, 10)}`;
+        // Stable ID derived from the label so the <input list> binding survives re-renders.
+        const listId = `ent-${opts.label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
         const fire = (raw) => opts.onChange(raw.trim());
         const matchCount = filtered.length;
         const hint = matchCount === 0
             ? b `<p class="warn">
-          No matching entities found
-          ${domains?.length
+            No matching entities found
+            ${domains?.length
                 ? b `for ${domains.map((d) => b `<code>${d}.*</code> `)}`
                 : A}
-          — type the entity ID directly if you know it.
-        </p>`
+            — type the entity ID directly if you know it.
+          </p>`
             : b `<p class="hint">
-          ${matchCount} matching ${matchCount === 1 ? "entity" : "entities"}
-          available — start typing to filter.
-        </p>`;
+            ${matchCount} ${matchCount === 1 ? "entity" : "entities"} available
+            — start typing to filter.
+          </p>`;
         return b `
       <div class="entity-row">
         <label class="entity-label">${opts.label}</label>
@@ -234,7 +235,6 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
         })}
         </datalist>
       </div>
-      ${opts.note ? b `<p class="hint">${opts.note}</p>` : A}
       ${hint}
     `;
     }
@@ -277,6 +277,10 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
             Number.isFinite(this._config.background_opacity_percent)
             ? String(Math.round(this._config.background_opacity_percent))
             : "100";
+        const bodyTopPx = typeof this._config.body_top_px === "number" &&
+            Number.isFinite(this._config.body_top_px)
+            ? String(Math.round(this._config.body_top_px))
+            : "24";
         const tempEntityRaw = (this._config.corner_temperature_entity ?? "").trim();
         const weatherTempFallback = tempEntityRaw.startsWith("weather.") ? tempEntityRaw : "";
         return b `
@@ -289,18 +293,13 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
             : A}
 
         <div class="section-title">Spotify player</div>
-        <div class="field-label">Media player entity</div>
         ${this._renderEntityField({
-            label: "Spotify media_player",
+            label: "Media player entity",
             value: this._config.entity ?? "",
             placeholder: "media_player.spotify",
             includeDomains: ["media_player"],
             onChange: (id) => this._merge({ entity: id }),
         })}
-        <p class="hint">
-          Choose the Spotify Connect <strong>media_player</strong>. You can also type
-          an entity ID if it does not appear in the list.
-        </p>
 
         <ha-textfield
           label="Card title (optional)"
@@ -446,6 +445,22 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
           position (50–300).
         </p>
 
+        <ha-textfield
+          label="Album art top offset (px)"
+          type="number"
+          inputMode="numeric"
+          min="0"
+          max="400"
+          .value=${bodyTopPx}
+          @change=${this._bodyTopPxChanged}
+        ></ha-textfield>
+        <p class="hint">
+          Pixels from the top of the card to where the album art starts.
+          <strong>24</strong> = natural default. Increase to push the album art lower
+          (e.g. to sit below the 'Up next' overlay on a horizontal dashboard).
+          The 'Up next' and clock/weather overlays never affect this value.
+        </p>
+
         <div class="section-title">Time &amp; temperature (top-left)</div>
         <ha-textfield
           label="Time &amp; temperature pane scale (%)"
@@ -480,9 +495,8 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
             @change=${this._cornerTempEnabledChanged}
           ></ha-switch>
         </ha-formfield>
-        <div class="field-label">Temperature entity</div>
         ${this._renderEntityField({
-            label: "Weather, sensor, or input_number",
+            label: "Temperature entity (weather, sensor, or input_number)",
             value: this._config.corner_temperature_entity ?? "",
             placeholder: "weather.met_no_home",
             includeDomains: ["weather", "sensor", "input_number"],
@@ -491,8 +505,8 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
             }),
         })}
         <p class="hint">
-          <strong>weather</strong> uses the <code>temperature</code> attribute;
-          <strong>sensor</strong> / <strong>input_number</strong> use the numeric state.
+          <code>weather.*</code> uses the <code>temperature</code> attribute;
+          <code>sensor</code> / <code>input_number</code> use the numeric state.
         </p>
         <div>
           <div class="field-label">Temperature display unit</div>
@@ -520,9 +534,8 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
             @change=${this._cornerWeatherIconChanged}
           ></ha-switch>
         </ha-formfield>
-        <div class="field-label">Weather entity</div>
         ${this._renderEntityField({
-            label: "weather.* (e.g. Met.no, Tempest)",
+            label: "Weather entity (e.g. Met.no, Tempest)",
             value: this._config.corner_weather_entity ?? "",
             placeholder: "weather.met_no_home",
             includeDomains: ["weather"],
@@ -610,6 +623,11 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
         if (typeof bop === "number" && Number.isFinite(bop)) {
             background_opacity_percent = Math.min(100, Math.max(0, Math.round(bop)));
         }
+        let body_top_px = 24;
+        const btp = c.body_top_px;
+        if (typeof btp === "number" && Number.isFinite(btp)) {
+            body_top_px = Math.min(400, Math.max(0, Math.round(btp)));
+        }
         return {
             type: "custom:spotify-spotlight-card",
             entity: typeof c.entity === "string" ? c.entity : "",
@@ -637,6 +655,7 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
             corner_climate_scale_percent,
             background_blur_px,
             background_opacity_percent,
+            body_top_px,
             show_corner_seconds: c.show_corner_seconds === true,
             show_corner_weather: c.show_corner_weather === true,
             show_corner_weather_icon: c.show_corner_weather_icon === true,
@@ -741,6 +760,15 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
         }
         this._merge({ background_opacity_percent: Math.min(100, Math.max(0, n)) });
     }
+    _bodyTopPxChanged(ev) {
+        const t = ev.target;
+        const n = parseInt(t.value, 10);
+        if (!Number.isFinite(n)) {
+            this._merge({ body_top_px: 24 });
+            return;
+        }
+        this._merge({ body_top_px: Math.min(400, Math.max(0, n)) });
+    }
     _cornerClimateScaleChanged(ev) {
         const t = ev.target;
         const n = parseInt(t.value, 10);
@@ -823,10 +851,6 @@ window.customCards.push({
     preview: true,
 });
 let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
-    constructor() {
-        super(...arguments);
-        this._lastTopInset = -1;
-    }
     static getStubConfig() {
         return {
             type: "custom:spotify-spotlight-card",
@@ -850,6 +874,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             corner_climate_scale_percent: 100,
             background_blur_px: 36,
             background_opacity_percent: 100,
+            body_top_px: 24,
         };
     }
     static getConfigElement() {
@@ -914,6 +939,11 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
         if (typeof bopRaw === "number" && Number.isFinite(bopRaw)) {
             background_opacity_percent = Math.min(100, Math.max(0, Math.round(bopRaw)));
         }
+        const btpRaw = raw.body_top_px;
+        let body_top_px = 24;
+        if (typeof btpRaw === "number" && Number.isFinite(btpRaw)) {
+            body_top_px = Math.min(400, Math.max(0, Math.round(btpRaw)));
+        }
         this.config = {
             type: "custom:spotify-spotlight-card",
             entity,
@@ -942,6 +972,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             corner_climate_scale_percent,
             background_blur_px,
             background_opacity_percent,
+            body_top_px,
         };
     }
     static { this.styles = i$3 `
@@ -1047,7 +1078,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
       display: flex;
       flex-direction: column;
       gap: var(--spot-gap);
-      padding: calc(24px + var(--spot-top-inset, 0px)) 24px 24px;
+      padding: var(--spot-top-inset, 24px) 24px 24px;
       height: 100%;
       min-height: inherit;
       box-sizing: border-box;
@@ -1395,6 +1426,12 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
       border-radius: 4px;
       background: rgba(255, 255, 255, 0.14);
       overflow: hidden;
+      cursor: pointer;
+      transition: height 0.15s ease;
+    }
+
+    .progress-bar:hover {
+      height: calc(7px * var(--spot-meta-scale, 2));
     }
 
     .progress-fill {
@@ -1402,6 +1439,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
       background: rgb(29, 185, 84);
       border-radius: 4px;
       transition: width 0.12s linear;
+      pointer-events: none;
     }
 
     .time-row {
@@ -1565,21 +1603,9 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
     connectedCallback() {
         super.connectedCallback();
         this._startTimers();
-        if (typeof ResizeObserver !== "undefined" && !this._resizeObs) {
-            this._resizeObs = new ResizeObserver(() => this._scheduleTopInsetSync());
-            this._resizeObs.observe(this);
-        }
     }
     disconnectedCallback() {
         this._stopTimers();
-        if (this._resizeObs) {
-            this._resizeObs.disconnect();
-            this._resizeObs = undefined;
-        }
-        if (this._topInsetRaf !== undefined && typeof window !== "undefined") {
-            window.cancelAnimationFrame(this._topInsetRaf);
-            this._topInsetRaf = undefined;
-        }
         super.disconnectedCallback();
     }
     /**
@@ -1646,7 +1672,6 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             }
         }
         this._syncLayoutCssVars();
-        this._scheduleTopInsetSync();
     }
     _syncLayoutCssVars() {
         const p = this.config?.text_scale_percent;
@@ -1685,62 +1710,49 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             opacity = Math.min(1, Math.max(0, bo / 100));
         }
         this.style.setProperty("--spot-backdrop-opacity", String(opacity));
-    }
-    /**
-     * Measure the corner overlays after the next paint and reserve enough top
-     * space in `.body` so the album art row never sits underneath them.
-     */
-    _scheduleTopInsetSync() {
-        if (typeof window === "undefined") {
-            return;
-        }
-        if (this._topInsetRaf !== undefined) {
-            return;
-        }
-        this._topInsetRaf = window.requestAnimationFrame(() => {
-            this._topInsetRaf = undefined;
-            this._syncTopInset();
-        });
-    }
-    _syncTopInset() {
-        const root = this.renderRoot;
-        if (!root) {
-            return;
-        }
-        const wrap = root.querySelector(".wrap");
-        if (!wrap) {
-            return;
-        }
-        const wrapTop = wrap.getBoundingClientRect().top;
-        const climate = root.querySelector(".corner-climate");
-        const upNext = root.querySelector(".up-next");
-        let bottom = 0;
-        if (climate) {
-            const r = climate.getBoundingClientRect();
-            bottom = Math.max(bottom, r.bottom - wrapTop);
-        }
-        if (upNext) {
-            const r = upNext.getBoundingClientRect();
-            bottom = Math.max(bottom, r.bottom - wrapTop);
-        }
-        const basePadding = 24;
-        const buffer = 8;
-        const inset = Math.max(0, Math.round(bottom - basePadding + buffer));
-        if (inset === this._lastTopInset) {
-            return;
-        }
-        this._lastTopInset = inset;
-        this.style.setProperty("--spot-top-inset", `${inset}px`);
+        const btp = this.config?.body_top_px;
+        const topPx = (typeof btp === "number" && Number.isFinite(btp))
+            ? Math.min(400, Math.max(0, Math.round(btp)))
+            : 24;
+        this.style.setProperty("--spot-top-inset", `${topPx}px`);
     }
     _stopTimers() {
         if (this._tickTimer !== undefined) {
-            clearInterval(this._tickTimer);
+            clearTimeout(this._tickTimer);
             this._tickTimer = undefined;
         }
         if (this._pollTimer !== undefined) {
             clearInterval(this._pollTimer);
             this._pollTimer = undefined;
         }
+    }
+    /**
+     * Schedule one wall-clock-aligned tick then re-schedule itself.
+     *
+     * `setInterval(fn, 1000)` fires at arbitrary offsets from the real second
+     * boundary — if the page loads at T+0.7s the clock updates at T+1.7s,
+     * T+2.7s, etc. Visually you get a fast double-tick when the interval
+     * straddles a second boundary. `setTimeout` with a delay of
+     * `1000 - (Date.now() % 1000)` always fires within a few ms of the next
+     * actual second, then re-schedules from that new baseline.
+     */
+    _scheduleTick() {
+        if (typeof window === "undefined" || !this.isConnected) {
+            return;
+        }
+        const delay = 1000 - (Date.now() % 1000);
+        this._tickTimer = window.setTimeout(() => {
+            this._tickTimer = undefined;
+            if (!this.isConnected) {
+                return;
+            }
+            const id = this.config?.entity;
+            const st = id ? this.hass?.states[id] : undefined;
+            if (st?.state === "playing" || this.config?.show_corner_time === true) {
+                this.requestUpdate();
+            }
+            this._scheduleTick();
+        }, delay);
     }
     _startTimers() {
         if (typeof window === "undefined") {
@@ -1753,13 +1765,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
         }
         const pollSecConfig = this.config?.poll_interval_seconds ?? 5;
         const pollMs = Math.min(120_000, Math.max(2000, pollSecConfig * 1000));
-        const tickClock = this.config?.show_corner_time === true;
-        this._tickTimer = window.setInterval(() => {
-            const st = this.hass?.states[id];
-            if (st?.state === "playing" || tickClock) {
-                this.requestUpdate();
-            }
-        }, 1000);
+        this._scheduleTick();
         void this.hass.callService("homeassistant", "update_entity", {
             entity_id: id,
         });
@@ -1793,6 +1799,12 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             entity_id: eid,
             ...data,
         });
+    }
+    _seekTo(ev, dur) {
+        const bar = ev.currentTarget;
+        const rect = bar.getBoundingClientRect();
+        const fraction = Math.min(1, Math.max(0, (ev.clientX - rect.left) / rect.width));
+        void this._callService("media_seek", { seek_position: Math.round(fraction * dur) });
     }
     /** Delta is absolute change on 0–1 scale (e.g. 0.05 = five percentage points). */
     _adjustVolumeLevel(delta) {
@@ -2063,7 +2075,10 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
                   ${dur > 0
             ? b `
                         <div class="progress-wrap">
-                          <div class="progress-bar">
+                          <div
+                            class="progress-bar"
+                            @click=${(ev) => this._seekTo(ev, dur)}
+                          >
                             <div
                               class="progress-fill"
                               style="width:${pct}%"
@@ -2081,11 +2096,11 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             </div>
 
             <div class="bottom-stack">
-            <div class="glass-panel controls-main">
-              <div class="transport-side-left">
-                <button
-                  class="ctrl-btn ${repeat !== "off" ? "active" : ""}"
-                  @click=${() => {
+              <div class="glass-panel controls-main">
+                <div class="transport-side-left">
+                  <button
+                    class="ctrl-btn ${repeat !== "off" ? "active" : ""}"
+                    @click=${() => {
             const next = repeat === "off"
                 ? "all"
                 : repeat === "all"
@@ -2093,127 +2108,122 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
                     : "off";
             return this._callService("repeat_set", { repeat: next });
         }}
-                  title="Repeat"
-                >
-                  <ha-icon
-                    icon=${repeat === "one"
-            ? "mdi:repeat-once"
-            : "mdi:repeat"}
-                  ></ha-icon>
-                </button>
-                <button
-                  class="ctrl-btn ${shuffle ? "active" : ""}"
-                  @click=${() => this._callService("shuffle_set", { shuffle: !shuffle })}
-                  title="Shuffle"
-                >
-                  <ha-icon icon="mdi:shuffle"></ha-icon>
-                </button>
-              </div>
-              <div class="transport-cluster">
-                <button
-                  class="ctrl-btn"
-                  @click=${() => this._callService("media_previous_track")}
-                  title="Previous"
-                >
-                  <ha-icon icon="mdi:skip-previous"></ha-icon>
-                </button>
-                <button
-                  class="ctrl-btn primary"
-                  @click=${() => this._callService("media_play_pause")}
-                  title=${playing ? "Pause" : "Play"}
-                >
-                  <ha-icon
-                    icon=${playing ? "mdi:pause" : "mdi:play"}
-                    style="font-size:28px"
-                  ></ha-icon>
-                </button>
-                <button
-                  class="ctrl-btn"
-                  @click=${() => this._callService("media_next_track")}
-                  title="Next"
-                >
-                  <ha-icon icon="mdi:skip-next"></ha-icon>
-                </button>
-              </div>
-              <div class="transport-side-right">
-                ${showBrowseBtn
+                    title="Repeat"
+                  >
+                    <ha-icon
+                      icon=${repeat === "one" ? "mdi:repeat-once" : "mdi:repeat"}
+                    ></ha-icon>
+                  </button>
+                  <button
+                    class="ctrl-btn ${shuffle ? "active" : ""}"
+                    @click=${() => this._callService("shuffle_set", { shuffle: !shuffle })}
+                    title="Shuffle"
+                  >
+                    <ha-icon icon="mdi:shuffle"></ha-icon>
+                  </button>
+                </div>
+                <div class="transport-cluster">
+                  <button
+                    class="ctrl-btn"
+                    @click=${() => this._callService("media_previous_track")}
+                    title="Previous"
+                  >
+                    <ha-icon icon="mdi:skip-previous"></ha-icon>
+                  </button>
+                  <button
+                    class="ctrl-btn primary"
+                    @click=${() => this._callService("media_play_pause")}
+                    title=${playing ? "Pause" : "Play"}
+                  >
+                    <ha-icon
+                      icon=${playing ? "mdi:pause" : "mdi:play"}
+                      style="font-size:28px"
+                    ></ha-icon>
+                  </button>
+                  <button
+                    class="ctrl-btn"
+                    @click=${() => this._callService("media_next_track")}
+                    title="Next"
+                  >
+                    <ha-icon icon="mdi:skip-next"></ha-icon>
+                  </button>
+                </div>
+                <div class="transport-side-right">
+                  ${showBrowseBtn
             ? b `
-                      <button
-                        type="button"
-                        class="ctrl-btn browse-icon-btn"
-                        title="Media library"
-                        @click=${() => this._navigateToHaMediaBrowser()}
-                      >
-                        <ha-icon
-                          icon="mdi:play-box-multiple-outline"
-                        ></ha-icon>
-                      </button>
-                    `
+                        <button
+                          type="button"
+                          class="ctrl-btn browse-icon-btn"
+                          title="Media library"
+                          @click=${() => this._navigateToHaMediaBrowser()}
+                        >
+                          <ha-icon icon="mdi:play-box-multiple-outline"></ha-icon>
+                        </button>
+                      `
             : A}
+                </div>
               </div>
-            </div>
 
-          <div class="glass-panel vol-row">
-            <button
-              class="ctrl-btn"
-              style="width:44px;height:44px;flex-shrink:0"
-              title="Volume down 5%"
-              @click=${() => this._adjustVolumeLevel(-0.05)}
-            >
-              <ha-icon icon="mdi:volume-minus"></ha-icon>
-            </button>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              step="1"
-              .value=${String(Math.round(vol * 100))}
-              @input=${(ev) => {
+              <div class="glass-panel vol-row">
+                <button
+                  class="ctrl-btn"
+                  style="width:44px;height:44px;flex-shrink:0"
+                  title="Volume down 5%"
+                  @click=${() => this._adjustVolumeLevel(-0.05)}
+                >
+                  <ha-icon icon="mdi:volume-minus"></ha-icon>
+                </button>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  .value=${String(Math.round(vol * 100))}
+                  @input=${(ev) => {
             const v = Number(ev.target.value) / 100;
             void this._callService("volume_set", { volume_level: v });
         }}
-            />
-            <button
-              class="ctrl-btn"
-              style="width:44px;height:44px;flex-shrink:0"
-              title="Volume up 5%"
-              @click=${() => this._adjustVolumeLevel(0.05)}
-            >
-              <ha-icon icon="mdi:volume-plus"></ha-icon>
-            </button>
-          </div>
+                />
+                <button
+                  class="ctrl-btn"
+                  style="width:44px;height:44px;flex-shrink:0"
+                  title="Volume up 5%"
+                  @click=${() => this._adjustVolumeLevel(0.05)}
+                >
+                  <ha-icon icon="mdi:volume-plus"></ha-icon>
+                </button>
+              </div>
 
-          <div
-            class="glass-panel ${this.config.source_tablet_mode === true
+              <div
+                class="glass-panel ${this.config.source_tablet_mode === true
             ? "source-tablet"
             : ""}"
-          >
-            <div class="source-row">
-              <div>
-                <label>Source</label>
-                <span class="subtle">${src || "—"}</span>
-              </div>
-              ${srcList.length
+              >
+                <div class="source-row">
+                  <div>
+                    <label>Source</label>
+                    <span class="subtle">${src || "—"}</span>
+                  </div>
+                  ${srcList.length
             ? b `
-                    <select
-                      class="source-select"
-                      .value=${src}
-                      @change=${(ev) => {
+                        <select
+                          class="source-select"
+                          .value=${src}
+                          @change=${(ev) => {
                 const v = ev.target.value;
                 void this._callService("select_source", {
                     source: v,
                 });
             }}
-                    >
-                      ${srcList.map((s) => b `<option value=${s} .selected=${s === src}>
-                            ${s}
-                          </option>`)}
-                    </select>
-                  `
+                        >
+                          ${srcList.map((s) => b `<option value=${s} .selected=${s === src}>
+                                ${s}
+                              </option>`)}
+                        </select>
+                      `
             : A}
-            </div>
-          </div>
-
+                </div>
+              </div>
             </div>
           </div>
           ${hasUpNext

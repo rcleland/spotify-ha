@@ -169,7 +169,6 @@ export class SpotifySpotlightCardEditor extends LitElement {
     placeholder?: string;
     includeDomains?: string[];
     onChange: (entityId: string) => void;
-    note?: TemplateResult | string;
   }): TemplateResult {
     const states = (this.hass?.states ?? {}) as Record<
       string,
@@ -178,27 +177,27 @@ export class SpotifySpotlightCardEditor extends LitElement {
     const domains = opts.includeDomains;
     const allIds = Object.keys(states).sort();
     const filtered = domains?.length
-      ? allIds.filter((id) =>
-          domains.some((d) => id.startsWith(`${d}.`)),
-        )
+      ? allIds.filter((id) => domains.some((d) => id.startsWith(`${d}.`)))
       : allIds;
 
-    const listId = `ent-list-${Math.random().toString(36).slice(2, 10)}`;
+    // Stable ID derived from the label so the <input list> binding survives re-renders.
+    const listId = `ent-${opts.label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
     const fire = (raw: string): void => opts.onChange(raw.trim());
 
     const matchCount = filtered.length;
-    const hint = matchCount === 0
-      ? html`<p class="warn">
-          No matching entities found
-          ${domains?.length
-            ? html`for ${domains.map((d) => html`<code>${d}.*</code> `)}`
-            : nothing}
-          — type the entity ID directly if you know it.
-        </p>`
-      : html`<p class="hint">
-          ${matchCount} matching ${matchCount === 1 ? "entity" : "entities"}
-          available — start typing to filter.
-        </p>`;
+    const hint =
+      matchCount === 0
+        ? html`<p class="warn">
+            No matching entities found
+            ${domains?.length
+              ? html`for ${domains.map((d) => html`<code>${d}.*</code> `)}`
+              : nothing}
+            — type the entity ID directly if you know it.
+          </p>`
+        : html`<p class="hint">
+            ${matchCount} ${matchCount === 1 ? "entity" : "entities"} available
+            — start typing to filter.
+          </p>`;
 
     return html`
       <div class="entity-row">
@@ -223,7 +222,6 @@ export class SpotifySpotlightCardEditor extends LitElement {
           })}
         </datalist>
       </div>
-      ${opts.note ? html`<p class="hint">${opts.note}</p>` : nothing}
       ${hint}
     `;
   }
@@ -285,6 +283,12 @@ export class SpotifySpotlightCardEditor extends LitElement {
         ? String(Math.round(this._config.background_opacity_percent))
         : "100";
 
+    const bodyTopPx =
+      typeof this._config.body_top_px === "number" &&
+      Number.isFinite(this._config.body_top_px)
+        ? String(Math.round(this._config.body_top_px))
+        : "24";
+
     const tempEntityRaw = (this._config.corner_temperature_entity ?? "").trim();
     const weatherTempFallback =
       tempEntityRaw.startsWith("weather.") ? tempEntityRaw : "";
@@ -299,18 +303,13 @@ export class SpotifySpotlightCardEditor extends LitElement {
           : nothing}
 
         <div class="section-title">Spotify player</div>
-        <div class="field-label">Media player entity</div>
         ${this._renderEntityField({
-          label: "Spotify media_player",
+          label: "Media player entity",
           value: this._config.entity ?? "",
           placeholder: "media_player.spotify",
           includeDomains: ["media_player"],
           onChange: (id) => this._merge({ entity: id }),
         })}
-        <p class="hint">
-          Choose the Spotify Connect <strong>media_player</strong>. You can also type
-          an entity ID if it does not appear in the list.
-        </p>
 
         <ha-textfield
           label="Card title (optional)"
@@ -462,6 +461,22 @@ export class SpotifySpotlightCardEditor extends LitElement {
           position (50–300).
         </p>
 
+        <ha-textfield
+          label="Album art top offset (px)"
+          type="number"
+          inputMode="numeric"
+          min="0"
+          max="400"
+          .value=${bodyTopPx}
+          @change=${this._bodyTopPxChanged}
+        ></ha-textfield>
+        <p class="hint">
+          Pixels from the top of the card to where the album art starts.
+          <strong>24</strong> = natural default. Increase to push the album art lower
+          (e.g. to sit below the 'Up next' overlay on a horizontal dashboard).
+          The 'Up next' and clock/weather overlays never affect this value.
+        </p>
+
         <div class="section-title">Time &amp; temperature (top-left)</div>
         <ha-textfield
           label="Time &amp; temperature pane scale (%)"
@@ -496,9 +511,8 @@ export class SpotifySpotlightCardEditor extends LitElement {
             @change=${this._cornerTempEnabledChanged}
           ></ha-switch>
         </ha-formfield>
-        <div class="field-label">Temperature entity</div>
         ${this._renderEntityField({
-          label: "Weather, sensor, or input_number",
+          label: "Temperature entity (weather, sensor, or input_number)",
           value: this._config.corner_temperature_entity ?? "",
           placeholder: "weather.met_no_home",
           includeDomains: ["weather", "sensor", "input_number"],
@@ -508,8 +522,8 @@ export class SpotifySpotlightCardEditor extends LitElement {
             }),
         })}
         <p class="hint">
-          <strong>weather</strong> uses the <code>temperature</code> attribute;
-          <strong>sensor</strong> / <strong>input_number</strong> use the numeric state.
+          <code>weather.*</code> uses the <code>temperature</code> attribute;
+          <code>sensor</code> / <code>input_number</code> use the numeric state.
         </p>
         <div>
           <div class="field-label">Temperature display unit</div>
@@ -540,9 +554,8 @@ export class SpotifySpotlightCardEditor extends LitElement {
             @change=${this._cornerWeatherIconChanged}
           ></ha-switch>
         </ha-formfield>
-        <div class="field-label">Weather entity</div>
         ${this._renderEntityField({
-          label: "weather.* (e.g. Met.no, Tempest)",
+          label: "Weather entity (e.g. Met.no, Tempest)",
           value: this._config.corner_weather_entity ?? "",
           placeholder: "weather.met_no_home",
           includeDomains: ["weather"],
@@ -648,6 +661,12 @@ export class SpotifySpotlightCardEditor extends LitElement {
       background_opacity_percent = Math.min(100, Math.max(0, Math.round(bop)));
     }
 
+    let body_top_px = 24;
+    const btp = c.body_top_px;
+    if (typeof btp === "number" && Number.isFinite(btp)) {
+      body_top_px = Math.min(400, Math.max(0, Math.round(btp)));
+    }
+
     return {
       type: "custom:spotify-spotlight-card",
       entity: typeof c.entity === "string" ? c.entity : "",
@@ -677,6 +696,7 @@ export class SpotifySpotlightCardEditor extends LitElement {
       corner_climate_scale_percent,
       background_blur_px,
       background_opacity_percent,
+      body_top_px,
       show_corner_seconds: c.show_corner_seconds === true,
       show_corner_weather: c.show_corner_weather === true,
       show_corner_weather_icon: c.show_corner_weather_icon === true,
@@ -797,6 +817,16 @@ export class SpotifySpotlightCardEditor extends LitElement {
       return;
     }
     this._merge({ background_opacity_percent: Math.min(100, Math.max(0, n)) });
+  }
+
+  private _bodyTopPxChanged(ev: Event): void {
+    const t = ev.target as unknown as HTMLInputElement;
+    const n = parseInt(t.value, 10);
+    if (!Number.isFinite(n)) {
+      this._merge({ body_top_px: 24 });
+      return;
+    }
+    this._merge({ body_top_px: Math.min(400, Math.max(0, n)) });
   }
 
   private _cornerClimateScaleChanged(ev: Event): void {

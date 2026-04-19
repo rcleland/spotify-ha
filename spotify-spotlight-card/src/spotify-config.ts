@@ -84,4 +84,11 @@ export interface SpotifySpotlightCardConfig {
    * scrim that keeps text readable.
    */
   background_opacity_percent?: number;
+  /**
+   * Absolute pixel distance from the top of the card to where the album art
+   * starts. Completely independent of the 'up next' and corner-climate overlays.
+   * 24 = natural default (matches the card's base padding).
+   * Increase to push the album art lower. Clamped 0–400.
+   */
+  body_top_px?: number;
 }

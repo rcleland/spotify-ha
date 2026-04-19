@@ -36,13 +36,13 @@ from .const import (
     PLAYABLE_MEDIA_TYPES,
 )
 from .util import (
-    async_get_playlist_resilient,
     async_get_playlists_for_current_user_resilient,
     fetch_image_url,
 )
 
 BROWSE_LIMIT = 48
-# Spotify returns up to 100 per request; avoid huge browse trees.
+# Hard cap on how many playlist tracks we page through for browsing.
+# Spotify's API returns up to 100 items per page; 800 = ~17 pages.
 _MAX_PLAYLIST_TRACKS_BROWSE = 800
 
 
@@ -79,10 +79,26 @@ def _get_album_item_payload(album: SimplifiedAlbum) -> ItemPayload:
     }
 
 
-def _get_playlist_item_payload(playlist: BasePlaylist) -> ItemPayload:
+def _get_playlist_item_payload(
+    playlist: BasePlaylist,
+    *,
+    current_user_id: str | None = None,
+) -> ItemPayload:
+    name = playlist.name
+
+    # Append "· by Owner" for playlists the current user doesn't own.
+    owner = getattr(playlist, "owner", None)
+    if owner is not None:
+        owner_id: str | None = getattr(owner, "id", None)
+        owner_display: str | None = (
+            getattr(owner, "display_name", None) or owner_id
+        )
+        if owner_display and owner_id != current_user_id:
+            name = f"{name} · by {owner_display}"
+
     return {
         "id": playlist.playlist_id,
-        "name": playlist.name,
+        "name": name,
         "type": MediaType.PLAYLIST,
         "uri": playlist.uri,
         "thumbnail": fetch_image_url(playlist.images),
@@ -257,15 +273,59 @@ async def _get_artist_albums_resilient(
     return albums
 
 
-async def _spotify_user_market(spotify: SpotifyClient) -> str | None:
-    """ISO country for track/album markets (required for many catalog endpoints)."""
+async def _get_current_user_id(spotify: SpotifyClient) -> str | None:
+    """Return the authenticated user's Spotify ID (e.g. ``"rcleland"``).
+
+    Tries the spotifyaio model first; falls back to parsing raw ``GET /me``
+    JSON in case the model doesn't expose the ``id`` field.
+    """
     try:
         profile = await spotify.get_current_user()
+        uid = getattr(profile, "id", None)
+        if isinstance(uid, str) and uid:
+            return uid
     except Exception:
+        pass
+    raw_get = getattr(spotify, "_get", None)
+    if raw_get is None:
         return None
-    country = getattr(profile, "country", None)
-    if isinstance(country, str) and len(country) == 2:
-        return country.upper()
+    try:
+        raw = await raw_get("v1/me")
+        uid = orjson.loads(raw).get("id")
+        return uid if isinstance(uid, str) and uid else None
+    except Exception:
+        _LOGGER.debug("Could not fetch current user id", exc_info=True)
+        return None
+
+
+async def _spotify_user_market(spotify: SpotifyClient) -> str | None:
+    """ISO country code for market-aware API requests.
+
+    The spotifyaio ``UserProfile`` model does not always expose ``country``
+    (it's a Premium-only field in the Spotify API, and may be absent from the
+    model definition).  We try the model first, then fall back to a raw
+    ``GET /me`` call so we can read ``country`` directly from the JSON.
+    """
+    # Try the spotifyaio model first.
+    try:
+        profile = await spotify.get_current_user()
+        country = getattr(profile, "country", None)
+        if isinstance(country, str) and len(country) == 2:
+            return country.upper()
+    except Exception:
+        pass
+
+    # Fall back to parsing the raw /me JSON (avoids model field gaps).
+    raw_get = getattr(spotify, "_get", None)
+    if raw_get is None:
+        return None
+    try:
+        raw = await raw_get("v1/me")
+        country = orjson.loads(raw).get("country")
+        if isinstance(country, str) and len(country) == 2:
+            return country.upper()
+    except Exception:
+        _LOGGER.debug("Could not determine user market from /me", exc_info=True)
     return None
 
 
@@ -400,25 +460,18 @@ async def _fetch_playlist_rows_via_api(
 async def _load_playlist_track_payloads(
     spotify: SpotifyClient,
     media_content_id: str,
-    *,
-    embedded_rows: list[PlaylistTrack] | None = None,
 ) -> list[ItemPayload]:
     """Resolve playlist tracks for browsing.
 
-    Strategy (in order):
-      1. Use the embedded ``playlist.items.items`` rows from
-         ``GET /playlists/{id}`` — this is what worked for owned playlists
-         and avoids an extra request.
-      2. Fall back to ``GET /playlists/{id}/items`` with paging and a
-         relaxed parser — this covers non-owned playlists where the
-         embedded model often parses as zero items.
-      3. Final fallback: ``spotify.get_playlist_items`` via spotifyaio.
+    Always uses the paged ``GET /playlists/{id}/items`` endpoint with a
+    tolerant per-row parser (``_playlist_api_row_to_payload``) that skips
+    null / local-file rows instead of aborting on the first bad entry.
+    A ``market`` parameter is sent when the user's country is known so that
+    Spotify substitutes / filters region-restricted tracks rather than
+    returning ``track: null`` rows (which would otherwise be dropped and
+    produce an empty result for editorial / non-owned playlists).
+    Falls back to ``spotify.get_playlist_items`` as a last resort.
     """
-    if embedded_rows:
-        payloads = _playlist_rows_to_payloads(embedded_rows)
-        if payloads:
-            return payloads
-
     market = await _spotify_user_market(spotify)
     payloads = await _fetch_playlist_rows_via_api(
         spotify, media_content_id, market=market
@@ -426,11 +479,16 @@ async def _load_playlist_track_payloads(
     if payloads:
         return payloads
 
+    _LOGGER.debug(
+        "Paged /items API returned no payloads for %s; "
+        "trying spotifyaio get_playlist_items as last resort",
+        media_content_id,
+    )
     try:
         rows = await spotify.get_playlist_items(media_content_id)
     except Exception:
         _LOGGER.debug(
-            "get_playlist_items fallback failed for %s",
+            "get_playlist_items fallback also failed for %s",
             media_content_id,
             exc_info=True,
         )
@@ -456,32 +514,69 @@ def _playlist_rows_to_payloads(rows: list[PlaylistTrack]) -> list[ItemPayload]:
     return items
 
 
+async def _fetch_playlist_metadata(
+    spotify: SpotifyClient,
+    media_content_id: str,
+    *,
+    current_user_id: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Return (display_title, image_url) for a playlist without touching track models.
+
+    Uses ``fields=name,images,owner`` so Spotify never includes embedded track
+    items in the response — the strict ``Playlist.from_json()`` model (which
+    chokes on newer track payloads) is therefore never invoked.
+
+    ``display_title`` includes ``· by {owner}`` for playlists not owned by
+    ``current_user_id``, mirroring the attribution shown in the playlist list.
+    """
+    raw_get = getattr(spotify, "_get", None)
+    if raw_get is None:
+        return None, None
+    identifier = get_identifier(media_content_id)
+    try:
+        raw = await raw_get(
+            f"v1/playlists/{identifier}",
+            params={"fields": "name,images,owner"},
+        )
+        data = orjson.loads(raw)
+        name = data.get("name")
+        images = data.get("images") or []
+        image_url: str | None = None
+        if images and isinstance(images[0], dict):
+            image_url = images[0].get("url")
+        if isinstance(name, str) and name:
+            owner = data.get("owner") or {}
+            owner_id: str | None = owner.get("id")
+            owner_name: str | None = owner.get("display_name") or owner_id
+            if owner_name and owner_id != current_user_id:
+                name = f"{name} · by {owner_name}"
+        return (name if isinstance(name, str) and name else None, image_url)
+    except Exception:
+        _LOGGER.debug(
+            "Could not fetch playlist metadata for %s", media_content_id, exc_info=True
+        )
+        return None, None
+
+
 async def _browse_playlist_tracks(
     spotify: SpotifyClient, media_content_id: str
 ) -> tuple[str | None, str | None, list[ItemPayload]]:
     """Resolve playlist title, artwork, and track list.
 
-    Uses the embedded `playlist.items.items` when present (works great for
-    owned playlists). For non-owned / followed playlists the embedded list
-    is often empty after strict parsing, so we additionally page
-    `GET /playlists/{id}/items` with a relaxed row parser that survives
-    region-restricted ``track: null`` rows.
+    Metadata (name + artwork) comes from a lightweight
+    ``fields=name,images`` request that never touches the track model, so it
+    works for both owned and non-owned playlists regardless of the spotifyaio
+    model version.  Tracks are fetched separately via the paged
+    ``/items`` endpoint with a tolerant per-row parser.
     """
-    title: str | None = None
-    image: str | None = None
-    embedded_rows: list[PlaylistTrack] | None = None
-
-    playlist = await async_get_playlist_resilient(spotify, media_content_id)
-    if playlist is not None:
-        title = playlist.name
-        image = playlist.images[0].url if playlist.images else None
-        container = playlist.items
-        if container and container.items:
-            embedded_rows = list(container.items)
-
-    payloads = await _load_playlist_track_payloads(
-        spotify, media_content_id, embedded_rows=embedded_rows
+    # Fetch user ID once; share it between metadata (for owner attribution)
+    # and track loading (for market resolution — both call /me internally,
+    # but the OS TCP stack will likely serve the second from cache).
+    current_user_id = await _get_current_user_id(spotify)
+    title, image = await _fetch_playlist_metadata(
+        spotify, media_content_id, current_user_id=current_user_id
     )
+    payloads = await _load_playlist_track_payloads(spotify, media_content_id)
     return title, image, payloads
 
 
@@ -648,8 +743,12 @@ async def build_item_response(  # noqa: C901
     items: list[ItemPayload] = []
 
     if media_content_type == BrowsableMedia.CURRENT_USER_PLAYLISTS:
+        current_user_id = await _get_current_user_id(spotify)
         if playlists := await async_get_playlists_for_current_user_resilient(spotify):
-            items = [_get_playlist_item_payload(playlist) for playlist in playlists]
+            items = [
+                _get_playlist_item_payload(playlist, current_user_id=current_user_id)
+                for playlist in playlists
+            ]
     elif media_content_type == BrowsableMedia.CURRENT_USER_FOLLOWED_ARTISTS:
         if artists := await spotify.get_followed_artists():
             items = [_get_artist_item_payload(artist) for artist in artists]
