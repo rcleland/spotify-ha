@@ -9,11 +9,18 @@ import {
   type CSSResultGroup,
   type TemplateResult,
 } from "lit";
-import { customElement, property, state } from "lit/decorators.js";
+import { customElement, property } from "lit/decorators.js";
 
-import type { CoverAlign, SpotifySpotlightCardConfig } from "./spotify-config";
+import type {
+  CornerTemperatureUnit,
+  CoverAlign,
+  SpotifySpotlightCardConfig,
+} from "./spotify-config";
 
-export type { SpotifySpotlightCardConfig } from "./spotify-config";
+export type {
+  CornerTemperatureUnit,
+  SpotifySpotlightCardConfig,
+} from "./spotify-config";
 
 import "./spotify-spotlight-card-editor";
 
@@ -25,14 +32,6 @@ declare global {
       description: string;
       preview?: boolean;
     }>;
-    /** Set by HA Lovelace — preloads more-info chunks (including media player). */
-    loadCardHelpers?: () => Promise<{
-      importMoreInfoControl?: (domain: string) => void;
-    }>;
-  }
-
-  interface HTMLElementTagNameMap {
-    "ha-media-player-browse": HTMLElement;
   }
 }
 
@@ -50,21 +49,18 @@ interface HomeAssistant {
     service: string,
     serviceData?: Record<string, unknown>,
   ): Promise<void>;
+  config?: {
+    unit_system?: {
+      temperature?: string;
+    };
+  };
+  locale?: {
+    language?: string;
+  };
 }
 
 /** Same as Home Assistant `MediaPlayerEntityFeature.BROWSE_MEDIA` */
 const MEDIA_PLAYER_FEATURE_BROWSE_MEDIA = 1 << 17;
-
-/** Matches HA `MediaPlayerItemId` / root entry for `ha-media-player-browse`. */
-type MediaNavigateId = {
-  media_content_id?: string;
-  media_content_type?: string;
-};
-
-const ROOT_BROWSE_ID: MediaNavigateId = {
-  media_content_id: undefined,
-  media_content_type: undefined,
-};
 
 window.customCards = window.customCards ?? [];
 window.customCards.push({
@@ -86,6 +82,9 @@ export class SpotifySpotlightCard extends LitElement {
       show_browse_media_button: true,
       cover_align: "center",
       poll_interval_seconds: 5,
+      show_corner_time: false,
+      show_corner_temperature: false,
+      corner_temperature_unit: "auto",
     };
   }
 
@@ -126,6 +125,14 @@ export class SpotifySpotlightCard extends LitElement {
     const cover_align: CoverAlign =
       ca === "left" || ca === "center" || ca === "right" ? ca : "center";
 
+    const ctu = raw.corner_temperature_unit;
+    const corner_temperature_unit: CornerTemperatureUnit =
+      ctu === "celsius" || ctu === "fahrenheit" || ctu === "auto" ? ctu : "auto";
+
+    const cteRaw = raw.corner_temperature_entity;
+    const corner_temperature_entity =
+      typeof cteRaw === "string" ? cteRaw.trim() : undefined;
+
     this.config = {
       type: "custom:spotify-spotlight-card",
       entity,
@@ -135,19 +142,17 @@ export class SpotifySpotlightCard extends LitElement {
       show_browse_media_button: raw.show_browse_media_button !== false,
       cover_align,
       poll_interval_seconds,
+      show_corner_time: raw.show_corner_time === true,
+      show_corner_temperature: raw.show_corner_temperature === true,
+      corner_temperature_entity:
+        corner_temperature_entity?.length ? corner_temperature_entity : undefined,
+      corner_temperature_unit,
     };
   }
 
   private _pollTimer: ReturnType<typeof setInterval> | undefined;
 
   private _tickTimer: ReturnType<typeof setInterval> | undefined;
-
-  @state() private _mediaOverlayOpen = false;
-
-  /** Browse stack for `ha-media-player-browse` — must sync from `media-browsed` or folders never open. */
-  @state() private _browseNavigateIds: MediaNavigateId[] = [
-    { ...ROOT_BROWSE_ID },
-  ];
 
   static styles: CSSResultGroup = css`
     :host {
@@ -167,6 +172,7 @@ export class SpotifySpotlightCard extends LitElement {
 
     :host([data-tall]) {
       min-height: calc(100vh - 140px);
+      height: 100%;
     }
 
     .card-shell {
@@ -174,6 +180,12 @@ export class SpotifySpotlightCard extends LitElement {
       display: block;
       height: 100%;
       min-height: inherit;
+    }
+
+    :host([data-tall]) .card-shell {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
     }
 
     .wrap {
@@ -185,6 +197,14 @@ export class SpotifySpotlightCard extends LitElement {
       isolation: isolate;
     }
 
+    :host([data-tall]) .wrap {
+      flex: 1 1 auto;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      height: 100%;
+    }
+
     .backdrop {
       position: absolute;
       inset: -24px;
@@ -193,6 +213,13 @@ export class SpotifySpotlightCard extends LitElement {
       filter: blur(36px) saturate(1.15);
       transform: scale(1.06);
       z-index: 0;
+    }
+
+    :host([data-tall]) .backdrop {
+      inset: 0;
+      border-radius: inherit;
+      transform: scale(1.12);
+      background-position: center top;
     }
 
     .backdrop-fallback {
@@ -226,6 +253,25 @@ export class SpotifySpotlightCard extends LitElement {
       height: 100%;
       min-height: inherit;
       box-sizing: border-box;
+    }
+
+    :host([data-tall]) .body {
+      flex: 1 1 auto;
+      min-height: 0;
+      height: auto;
+    }
+
+    .bottom-stack {
+      display: flex;
+      flex-direction: column;
+      gap: var(--spot-gap);
+      width: 100%;
+    }
+
+    :host([data-tall]) .bottom-stack {
+      flex-shrink: 0;
+      margin-top: auto;
+      padding-top: 4px;
     }
 
     /** Pinned inside .wrap — does not participate in meta/center layout. */
@@ -295,6 +341,46 @@ export class SpotifySpotlightCard extends LitElement {
       white-space: nowrap;
     }
 
+    .corner-climate {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      z-index: 8;
+      max-width: min(220px, calc(100% - 40px));
+      box-sizing: border-box;
+      padding: 10px 14px;
+      background: var(--spot-glass-strong);
+      backdrop-filter: blur(22px);
+      -webkit-backdrop-filter: blur(22px);
+      border-radius: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+      text-align: left;
+      pointer-events: none;
+    }
+
+    .corner-time {
+      margin: 0;
+      font-size: 1.25rem;
+      font-weight: 650;
+      line-height: 1.2;
+      letter-spacing: 0.02em;
+      font-variant-numeric: tabular-nums;
+      text-shadow: 0 1px 12px rgba(0, 0, 0, 0.45);
+    }
+
+    .corner-temp {
+      margin: 4px 0 0;
+      font-size: 0.95rem;
+      font-weight: 550;
+      color: var(--spot-muted);
+      text-shadow: 0 1px 10px rgba(0, 0, 0, 0.4);
+    }
+
+    .corner-climate .corner-temp:first-child {
+      margin-top: 0;
+    }
+
     .top {
       display: flex;
       gap: 20px;
@@ -323,6 +409,34 @@ export class SpotifySpotlightCard extends LitElement {
     .top.cover-center .progress-wrap {
       width: 100%;
       max-width: 420px;
+    }
+
+    :host([data-tall]) .top {
+      flex: 0 1 auto;
+      min-height: 0;
+    }
+
+    :host([data-tall]) .top.cover-left,
+    :host([data-tall]) .top.cover-right {
+      align-items: flex-start;
+    }
+
+    :host([data-tall]) .top.cover-center {
+      justify-content: flex-start;
+      align-items: center;
+    }
+
+    :host([data-tall]) .top.cover-center .progress-wrap {
+      max-width: min(520px, 100%);
+    }
+
+    :host([data-tall]) .art {
+      width: min(340px, 86vw);
+      max-width: 100%;
+    }
+
+    :host([data-tall]) .meta {
+      justify-content: flex-start;
     }
 
     .top.cover-right {
@@ -531,89 +645,6 @@ export class SpotifySpotlightCard extends LitElement {
       font: inherit;
     }
 
-    .media-browser-overlay {
-      position: fixed;
-      inset: 0;
-      z-index: 10000;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: max(12px, env(safe-area-inset-top, 0px))
-        max(12px, env(safe-area-inset-right, 0px))
-        max(12px, env(safe-area-inset-bottom, 0px))
-        max(12px, env(safe-area-inset-left, 0px));
-      box-sizing: border-box;
-      background: rgba(8, 8, 14, 0.62);
-      backdrop-filter: blur(8px);
-      -webkit-backdrop-filter: blur(8px);
-    }
-
-    .media-browser-panel {
-      display: flex;
-      flex-direction: column;
-      width: min(920px, 100%);
-      height: min(88vh, 840px);
-      max-height: 100%;
-      overflow: hidden;
-      border-radius: 18px;
-      background: var(--card-background-color, rgb(28, 28, 36));
-      color: var(--primary-text-color, #e8e8ea);
-      box-shadow: 0 28px 80px rgba(0, 0, 0, 0.65);
-      border: 1px solid rgba(255, 255, 255, 0.1);
-    }
-
-    .media-browser-toolbar {
-      flex: 0 0 auto;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      flex-wrap: wrap;
-      gap: 8px;
-      padding: 10px 12px;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-    }
-
-    .media-browser-toolbar-actions {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-
-    .media-browser-toolbar-actions:last-of-type {
-      margin-left: auto;
-    }
-
-    .media-browser-toolbar button {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 10px 16px;
-      border-radius: 12px;
-      border: 1px solid rgba(255, 255, 255, 0.15);
-      background: rgba(255, 255, 255, 0.08);
-      color: inherit;
-      font: inherit;
-      font-weight: 600;
-      cursor: pointer;
-    }
-
-    .media-browser-toolbar button:hover:not(:disabled) {
-      background: rgba(255, 255, 255, 0.14);
-    }
-
-    .media-browser-toolbar button:disabled {
-      opacity: 0.38;
-      cursor: default;
-    }
-
-    .media-browser-panel ha-media-player-browse {
-      flex: 1 1 auto;
-      min-height: 0;
-      width: 100%;
-      --media-browser-max-height: min(88vh, 840px);
-    }
-
     .section-title {
       margin: 0 0 8px;
       font-size: 0.85rem;
@@ -630,96 +661,53 @@ export class SpotifySpotlightCard extends LitElement {
   override connectedCallback(): void {
     super.connectedCallback();
     this._startTimers();
-    this._preloadMediaPlayerBrowse();
   }
 
   override disconnectedCallback(): void {
-    window.removeEventListener("keydown", this._onMediaOverlayEscape);
     this._stopTimers();
     super.disconnectedCallback();
   }
 
-  private readonly _onMediaOverlayEscape = (ev: KeyboardEvent): void => {
-    if (ev.key === "Escape") {
-      this._closeMediaBrowserOverlay();
-    }
-  };
-
-  private _openMediaBrowserOverlay(): void {
-    if (!this.config?.entity || !this.hass) {
+  /**
+   * Opens HA’s full-screen media browser for this entity (same route as the sidebar Media panel).
+   * Uses `history.pushState` + `location-changed` like HA’s `navigate()` so **browser / OS back**
+   * returns to the dashboard.
+   */
+  private _navigateToHaMediaBrowser(): void {
+    const id = this.config?.entity;
+    if (!id || typeof window === "undefined") {
       return;
     }
-    if (this._mediaOverlayOpen) {
-      return;
+    const path = `/media-browser/${encodeURIComponent(id)}`;
+    let pathForHistory = this.hass?.hassUrl?.(path) ?? path;
+    if (
+      pathForHistory.startsWith("http://") ||
+      pathForHistory.startsWith("https://")
+    ) {
+      try {
+        const url = new URL(pathForHistory);
+        pathForHistory = url.pathname + url.search + url.hash;
+      } catch {
+        pathForHistory = path;
+      }
+    } else if (!pathForHistory.startsWith("/")) {
+      pathForHistory = `/${pathForHistory}`;
     }
-    this._browseNavigateIds = [{ ...ROOT_BROWSE_ID }];
-    this._mediaOverlayOpen = true;
-    window.addEventListener("keydown", this._onMediaOverlayEscape);
-  }
-
-  private _closeMediaBrowserOverlay(): void {
-    if (!this._mediaOverlayOpen) {
-      return;
+    try {
+      window.history.pushState(null, "", pathForHistory);
+      window.dispatchEvent(
+        new CustomEvent("location-changed", {
+          bubbles: true,
+          composed: true,
+          detail: { replace: false },
+        }),
+      );
+    } catch {
+      window.location.assign(
+        this.hass?.hassUrl?.(path) ??
+          new URL(path, window.location.origin).href,
+      );
     }
-    this._mediaOverlayOpen = false;
-    this._browseNavigateIds = [{ ...ROOT_BROWSE_ID }];
-    window.removeEventListener("keydown", this._onMediaOverlayEscape);
-  }
-
-  private _onMediaBrowseBackdrop(ev: Event): void {
-    if (ev.target === ev.currentTarget) {
-      this._closeMediaBrowserOverlay();
-    }
-  }
-
-  /** Warm-load HA media-player chunks so `ha-media-player-browse` upgrades in Lovelace. */
-  private _preloadMediaPlayerBrowse(): void {
-    if (typeof window === "undefined" || customElements.get("ha-media-player-browse")) {
-      return;
-    }
-    void window.loadCardHelpers?.().then((h) => {
-      h?.importMoreInfoControl?.("media_player");
-    });
-  }
-
-  private _onMediaBrowsed(ev: Event): void {
-    ev.stopPropagation();
-    const detail = (ev as CustomEvent<{ ids?: MediaNavigateId[]; replace?: boolean }>)
-      .detail;
-    const ids = detail?.ids;
-    if (!ids?.length) {
-      return;
-    }
-    this._browseNavigateIds = ids.map((x) => ({ ...x }));
-  }
-
-  private _onBrowseMediaPicked(ev: Event): void {
-    ev.stopPropagation();
-    const eid = this.config?.entity;
-    if (!eid || !this.hass) {
-      return;
-    }
-    const detail = (ev as CustomEvent<{
-      item?: { media_content_id?: string; media_content_type?: string };
-    }>).detail;
-    const item = detail?.item;
-    if (!item?.media_content_id || !item?.media_content_type) {
-      return;
-    }
-    void this.hass.callService("media_player", "play_media", {
-      entity_id: eid,
-      media_content_id: item.media_content_id,
-      media_content_type: item.media_content_type,
-    });
-  }
-
-  /** One level up in the browse stack, or close at root (same idea as HA’s media dialog). */
-  private _browseToolbarBack(): void {
-    if (this._browseNavigateIds.length > 1) {
-      this._browseNavigateIds = this._browseNavigateIds.slice(0, -1);
-      return;
-    }
-    this._closeMediaBrowserOverlay();
   }
 
   updated(changed: Map<string, unknown>): void {
@@ -767,9 +755,11 @@ export class SpotifySpotlightCard extends LitElement {
     const pollSecConfig = this.config?.poll_interval_seconds ?? 5;
     const pollMs = Math.min(120_000, Math.max(2000, pollSecConfig * 1000));
 
+    const tickClock = this.config?.show_corner_time === true;
+
     this._tickTimer = window.setInterval(() => {
       const st = this.hass?.states[id];
-      if (st?.state === "playing") {
+      if (st?.state === "playing" || tickClock) {
         this.requestUpdate();
       }
     }, 1000);
@@ -835,6 +825,91 @@ export class SpotifySpotlightCard extends LitElement {
     return `${m}:${r.toString().padStart(2, "0")}`;
   }
 
+  private _hassSystemUsesFahrenheit(): boolean {
+    const t = this.hass?.config?.unit_system?.temperature;
+    if (t === undefined || t === null) {
+      return false;
+    }
+    return String(t).toUpperCase().includes("F");
+  }
+
+  private _parseTemperatureNative(
+    entityId: string,
+  ): { value: number; unit: "C" | "F" } | undefined {
+    const st = this.hass?.states[entityId];
+    if (!st) {
+      return undefined;
+    }
+    const domain = entityId.split(".")[0];
+    if (domain === "weather") {
+      const raw = st.attributes?.temperature;
+      if (typeof raw !== "number" || Number.isNaN(raw)) {
+        return undefined;
+      }
+      return {
+        value: raw,
+        unit: this._hassSystemUsesFahrenheit() ? "F" : "C",
+      };
+    }
+    const raw = Number.parseFloat(String(st.state));
+    if (!Number.isFinite(raw)) {
+      return undefined;
+    }
+    const uom = String(st.attributes?.unit_of_measurement ?? "").toUpperCase();
+    if (/\bF\b|°F|ºF/.test(uom) || uom.includes("FAHRENHEIT")) {
+      return { value: raw, unit: "F" };
+    }
+    if (/\bC\b|°C|ºC/.test(uom) || uom.includes("CELSIUS")) {
+      return { value: raw, unit: "C" };
+    }
+    return {
+      value: raw,
+      unit: this._hassSystemUsesFahrenheit() ? "F" : "C",
+    };
+  }
+
+  private _toCelsius(value: number, unit: "C" | "F"): number {
+    return unit === "F" ? ((value - 32) * 5) / 9 : value;
+  }
+
+  private _formatCornerTemperature(): string | null {
+    const eid = this.config?.corner_temperature_entity?.trim();
+    if (!eid || !this.hass) {
+      return null;
+    }
+    const parsed = this._parseTemperatureNative(eid);
+    if (!parsed) {
+      return null;
+    }
+    const celsius = this._toCelsius(parsed.value, parsed.unit);
+    const pref = this.config?.corner_temperature_unit ?? "auto";
+    const showF =
+      pref === "fahrenheit" ||
+      (pref === "auto" && this._hassSystemUsesFahrenheit());
+    if (showF) {
+      const fahr = (celsius * 9) / 5 + 32;
+      return `${Math.round(fahr)}°F`;
+    }
+    return `${Math.round(celsius)}°C`;
+  }
+
+  private _cornerTimeLabel(): string {
+    const lang =
+      this.hass?.locale?.language ??
+      (typeof navigator !== "undefined" ? navigator.language : undefined);
+    try {
+      return new Date().toLocaleTimeString(lang, {
+        hour: "numeric",
+        minute: "2-digit",
+      });
+    } catch {
+      return new Date().toLocaleTimeString(undefined, {
+        hour: "numeric",
+        minute: "2-digit",
+      });
+    }
+  }
+
   protected render(): TemplateResult | typeof nothing {
     if (!this.config?.entity || !this.hass) {
       return html`<div class="body subtle">Configure entity</div>`;
@@ -893,6 +968,11 @@ export class SpotifySpotlightCard extends LitElement {
       (supportedFeat === 0 ||
         (supportedFeat & MEDIA_PLAYER_FEATURE_BROWSE_MEDIA) !== 0);
 
+    const showCornerTime = this.config.show_corner_time === true;
+    const showCornerTemperature =
+      this.config.show_corner_temperature === true;
+    const showCornerClimate = showCornerTime || showCornerTemperature;
+
     return html`
       <div class="card-shell">
         <div class="wrap">
@@ -901,6 +981,20 @@ export class SpotifySpotlightCard extends LitElement {
             style=${pic ? `background-image:url("${pic}")` : ""}
           ></div>
           <div class="scrim"></div>
+          ${showCornerClimate
+            ? html`
+                <div class="corner-climate" aria-label="Time and temperature">
+                  ${showCornerTime
+                    ? html`<div class="corner-time">${this._cornerTimeLabel()}</div>`
+                    : nothing}
+                  ${showCornerTemperature
+                    ? html`<div class="corner-temp">
+                        ${this._formatCornerTemperature() ?? "—"}
+                      </div>`
+                    : nothing}
+                </div>
+              `
+            : nothing}
           <div class="body">
             <div class="top ${coverClass}">
               <div class="art">
@@ -937,6 +1031,7 @@ export class SpotifySpotlightCard extends LitElement {
               </div>
             </div>
 
+            <div class="bottom-stack">
             <div class="glass-panel controls-main">
               <div class="transport-side-left">
                 <button
@@ -1000,7 +1095,7 @@ export class SpotifySpotlightCard extends LitElement {
                         type="button"
                         class="ctrl-btn browse-icon-btn"
                         title="Media library"
-                        @click=${() => this._openMediaBrowserOverlay()}
+                        @click=${() => this._navigateToHaMediaBrowser()}
                       >
                         <ha-icon
                           icon="mdi:play-box-multiple-outline"
@@ -1071,6 +1166,7 @@ export class SpotifySpotlightCard extends LitElement {
             </div>
           </div>
 
+            </div>
           </div>
           ${hasUpNext
             ? html`
@@ -1099,46 +1195,6 @@ export class SpotifySpotlightCard extends LitElement {
               `
             : nothing}
         </div>
-        ${this._mediaOverlayOpen && this.hass && this.config.entity
-          ? html`
-              <div
-                class="media-browser-overlay"
-                @click=${this._onMediaBrowseBackdrop}
-              >
-                <div
-                  class="media-browser-panel"
-                  @click=${(e: Event) => e.stopPropagation()}
-                >
-                  <div class="media-browser-toolbar">
-                    <div class="media-browser-toolbar-actions">
-                      <button type="button" @click=${() => this._browseToolbarBack()}>
-                        <ha-icon icon="mdi:arrow-left"></ha-icon>
-                        Back
-                      </button>
-                    </div>
-                    <div class="media-browser-toolbar-actions">
-                      <button
-                        type="button"
-                        @click=${() => this._closeMediaBrowserOverlay()}
-                      >
-                        <ha-icon icon="mdi:close"></ha-icon>
-                        Close
-                      </button>
-                    </div>
-                  </div>
-                  <ha-media-player-browse
-                    .hass=${this.hass as HomeAssistant & Record<string, unknown>}
-                    .entityId=${this.config.entity}
-                    .action=${"play"}
-                    .dialog=${true}
-                    .navigateIds=${this._browseNavigateIds}
-                    @media-browsed=${this._onMediaBrowsed}
-                    @media-picked=${this._onBrowseMediaPicked}
-                  ></ha-media-player-browse>
-                </div>
-              </div>
-            `
-          : nothing}
       </div>
     `;
   }

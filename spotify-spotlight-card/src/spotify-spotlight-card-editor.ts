@@ -4,7 +4,11 @@
 import { css, html, LitElement, type CSSResultGroup, type TemplateResult } from "lit";
 import { customElement, property } from "lit/decorators.js";
 
-import type { CoverAlign, SpotifySpotlightCardConfig } from "./spotify-config";
+import type {
+  CornerTemperatureUnit,
+  CoverAlign,
+  SpotifySpotlightCardConfig,
+} from "./spotify-config";
 
 /** Minimal `hass` shape for `ha-entity-picker`. */
 export interface HomeAssistantStub {
@@ -15,6 +19,12 @@ const COVER_OPTIONS: { value: CoverAlign; label: string }[] = [
   { value: "left", label: "Left" },
   { value: "center", label: "Center" },
   { value: "right", label: "Right" },
+];
+
+const TEMP_UNIT_OPTIONS: { value: CornerTemperatureUnit; label: string }[] = [
+  { value: "auto", label: "Auto (match Home Assistant)" },
+  { value: "celsius", label: "Celsius (°C)" },
+  { value: "fahrenheit", label: "Fahrenheit (°F)" },
 ];
 
 @customElement("spotify-spotlight-card-editor")
@@ -76,6 +86,12 @@ export class SpotifySpotlightCardEditor extends LitElement {
         : "5";
 
     const align: CoverAlign = this._config.cover_align ?? "center";
+    const tempUnit: CornerTemperatureUnit =
+      this._config.corner_temperature_unit === "celsius" ||
+      this._config.corner_temperature_unit === "fahrenheit"
+        ? this._config.corner_temperature_unit
+        : "auto";
+    const showTemp = this._config.show_corner_temperature === true;
 
     return html`
       <div class="card-config">
@@ -149,6 +165,50 @@ export class SpotifySpotlightCardEditor extends LitElement {
             @change=${this._upNextChanged}
           ></ha-switch>
         </ha-formfield>
+
+        <div class="field-label">Top left — time &amp; temperature</div>
+        <ha-formfield label="Show time">
+          <ha-switch
+            .checked=${this._config.show_corner_time === true}
+            @change=${this._cornerTimeChanged}
+          ></ha-switch>
+        </ha-formfield>
+        <ha-formfield label="Show temperature">
+          <ha-switch
+            .checked=${showTemp}
+            @change=${this._cornerTempEnabledChanged}
+          ></ha-switch>
+        </ha-formfield>
+        <ha-entity-picker
+          .hass=${this.hass}
+          .value=${this._config.corner_temperature_entity ?? ""}
+          .label=${"Temperature entity (weather or sensor)"}
+          .includeDomains=${["weather", "sensor", "input_number"]}
+          allow-custom-entity
+          .disabled=${!showTemp}
+          @value-changed=${this._cornerTempEntityChanged}
+        ></ha-entity-picker>
+        <p class="hint">
+          Use a <strong>weather</strong> entity (uses the <code>temperature</code> attribute)
+          or a numeric <strong>sensor</strong>. Temperature unit can follow Home Assistant or
+          be forced to °C / °F below.
+        </p>
+        <div>
+          <div class="field-label">Temperature display unit</div>
+          <select
+            class="field"
+            .value=${tempUnit}
+            .disabled=${!showTemp}
+            @change=${this._cornerTempUnitChanged}
+          >
+            ${TEMP_UNIT_OPTIONS.map(
+              (o) =>
+                html`<option value=${o.value} .selected=${tempUnit === o.value}>
+                  ${o.label}
+                </option>`,
+            )}
+          </select>
+        </div>
       </div>
     `;
   }
@@ -176,6 +236,12 @@ export class SpotifySpotlightCardEditor extends LitElement {
       poll_interval_seconds = Math.floor(pollRaw);
     }
 
+    const corner_temperature_unit: CornerTemperatureUnit =
+      c.corner_temperature_unit === "celsius" ||
+      c.corner_temperature_unit === "fahrenheit"
+        ? c.corner_temperature_unit
+        : "auto";
+
     return {
       type: "custom:spotify-spotlight-card",
       entity: typeof c.entity === "string" ? c.entity : "",
@@ -190,6 +256,13 @@ export class SpotifySpotlightCardEditor extends LitElement {
           ? c.cover_align
           : "center",
       poll_interval_seconds,
+      show_corner_time: c.show_corner_time === true,
+      show_corner_temperature: c.show_corner_temperature === true,
+      corner_temperature_entity:
+        typeof c.corner_temperature_entity === "string"
+          ? c.corner_temperature_entity.trim()
+          : undefined,
+      corner_temperature_unit,
     };
   }
 
@@ -245,6 +318,37 @@ export class SpotifySpotlightCardEditor extends LitElement {
   private _upNextChanged(ev: Event): void {
     const el = ev.currentTarget as HTMLElement & { checked: boolean };
     this._merge({ show_up_next: el.checked });
+  }
+
+  private _cornerTimeChanged(ev: Event): void {
+    const el = ev.currentTarget as HTMLElement & { checked: boolean };
+    this._merge({ show_corner_time: el.checked });
+  }
+
+  private _cornerTempEnabledChanged(ev: Event): void {
+    const el = ev.currentTarget as HTMLElement & { checked: boolean };
+    this._merge({ show_corner_temperature: el.checked });
+  }
+
+  private _cornerTempEntityChanged(ev: CustomEvent<{ value?: string }>): void {
+    ev.stopPropagation();
+    const raw = ev.detail?.value;
+    const corner_temperature_entity =
+      typeof raw === "string" ? raw.trim() : "";
+    this._merge({
+      corner_temperature_entity: corner_temperature_entity.length
+        ? corner_temperature_entity
+        : undefined,
+    });
+  }
+
+  private _cornerTempUnitChanged(ev: Event): void {
+    const t = ev.target as unknown as HTMLSelectElement;
+    const v = t.value as CornerTemperatureUnit;
+    this._merge({
+      corner_temperature_unit:
+        v === "celsius" || v === "fahrenheit" || v === "auto" ? v : "auto",
+    });
   }
 }
 
