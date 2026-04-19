@@ -35,8 +35,10 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from .browse_media import async_browse_media_internal
 from .const import (
     MEDIA_PLAYER_PREFIX,
+    MEDIA_TYPE_PLAYLIST_TRACK,
     MEDIA_TYPE_USER_SAVED_TRACKS,
     PLAYABLE_MEDIA_TYPES,
+    PLAYLIST_TRACK_CTX_SEP,
 )
 from .coordinator import (
     SpotifyConfigEntry,
@@ -351,6 +353,28 @@ class SpotifyMediaPlayer(SpotifyEntity, MediaPlayerEntity):
         # Spotify can't handle URI's with query strings or anchors
         # Yet, they do generate those types of URI in their official clients.
         media_id = str(URL(media_id).with_query(None).with_fragment(None))
+
+        # Track/episode selected from within a playlist browse: play the whole
+        # playlist starting at the chosen item so playback continues afterward.
+        if (
+            media_type == MEDIA_TYPE_PLAYLIST_TRACK
+            and PLAYLIST_TRACK_CTX_SEP in media_id
+        ):
+            ctx_uri, item_uri = media_id.split(PLAYLIST_TRACK_CTX_SEP, 1)
+            device_id = (
+                self.devices.data[0].device_id
+                if not self.currently_playing and self.devices.data
+                else None
+            )
+            if enqueue == MediaPlayerEnqueue.ADD:
+                await self.coordinator.client.add_to_queue(item_uri, device_id)
+                return
+            await self.coordinator.client.start_playback(
+                context_uri=ctx_uri,
+                uri_offset=item_uri,
+                device_id=device_id,
+            )
+            return
 
         if media_type in {MediaType.TRACK, MediaType.EPISODE, MediaType.MUSIC}:
             play_kwargs["uris"] = [media_id]

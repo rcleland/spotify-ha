@@ -15,6 +15,7 @@ from spotifyaio import (
     SpotifyClient,
     Track,
 )
+from spotifyaio.exceptions import SpotifyForbiddenError
 from spotifyaio.models import Episode, ItemType, PlaylistTrack, SimplifiedEpisode
 from spotifyaio.util import get_identifier
 import yarl
@@ -31,9 +32,11 @@ from homeassistant.core import HomeAssistant
 from .const import (
     DOMAIN,
     MEDIA_PLAYER_PREFIX,
+    MEDIA_TYPE_PLAYLIST_TRACK,
     MEDIA_TYPE_SHOW,
     MEDIA_TYPE_USER_SAVED_TRACKS,
     PLAYABLE_MEDIA_TYPES,
+    PLAYLIST_TRACK_CTX_SEP,
 )
 from .util import (
     async_get_playlists_for_current_user_resilient,
@@ -201,6 +204,10 @@ CONTENT_TYPE_MEDIA_CLASS: dict[str, Any] = {
     MediaType.PLAYLIST: {
         "parent": MediaClass.PLAYLIST,
         "children": MediaClass.TRACK,
+    },
+    MEDIA_TYPE_PLAYLIST_TRACK: {
+        "parent": MediaClass.TRACK,
+        "children": None,
     },
     MediaType.ALBUM: {"parent": MediaClass.ALBUM, "children": MediaClass.TRACK},
     MediaType.ARTIST: {"parent": MediaClass.ARTIST, "children": MediaClass.DIRECTORY},
@@ -440,6 +447,11 @@ async def _fetch_playlist_rows_via_api(
                 f"v1/playlists/{identifier}/items",
                 params=params,
             )
+        except SpotifyForbiddenError:
+            # Spotify's 2026 API restrictions deny access to the /items
+            # sub-endpoint for playlists not owned by the authenticated user.
+            # Re-raise so the caller can try the embedded-tracks fallback.
+            raise
         except Exception:
             _LOGGER.warning(
                 "Playlist items request failed for %s at offset %s",
@@ -512,9 +524,24 @@ async def _load_playlist_track_payloads(
         )
         market = "US"
 
-    payloads = await _fetch_playlist_rows_via_api(
-        spotify, media_content_id, market=market
-    )
+    try:
+        payloads = await _fetch_playlist_rows_via_api(
+            spotify, media_content_id, market=market
+        )
+    except SpotifyForbiddenError:
+        # Spotify's 2026 API changes block the /items sub-endpoint for
+        # non-owned playlists in developer-mode apps (403 Forbidden).
+        # Fall back to the embedded tracks in the playlist object itself,
+        # which uses a different endpoint and isn't subject to the same rule.
+        _LOGGER.debug(
+            "GET /playlists/%s/items returned 403; "
+            "trying embedded-tracks fallback",
+            media_content_id,
+        )
+        return await _fetch_tracks_embedded_in_playlist(
+            spotify, media_content_id, market=market
+        )
+
     if payloads:
         return payloads
 
@@ -552,6 +579,73 @@ def _playlist_rows_to_payloads(rows: list[PlaylistTrack]) -> list[ItemPayload]:
                 assert isinstance(inner, Episode)
             items.append(_get_episode_item_payload(inner))
     return items
+
+
+async def _fetch_tracks_embedded_in_playlist(
+    spotify: SpotifyClient,
+    media_content_id: str,
+    *,
+    market: str | None,
+) -> list[ItemPayload]:
+    """Fetch tracks via ``GET /v1/playlists/{id}?fields=tracks.items(...)``
+
+    This avoids the ``/items`` sub-endpoint which Spotify's 2026 API changes
+    blocked (403) for non-owned playlists in developer-mode apps.  The full
+    playlist object's embedded ``tracks`` block uses a different code-path on
+    Spotify's side and is not subject to the same restriction.
+
+    Limited to the first page (~100 tracks) because the ``next`` cursor also
+    points to the forbidden ``/items`` endpoint; better than nothing.
+    """
+    raw_get = getattr(spotify, "_get", None)
+    if raw_get is None:
+        return []
+    identifier = get_identifier(media_content_id)
+
+    # Request enough fields to build ItemPayload for each track.
+    fields = (
+        "tracks.items(track(id,name,uri,type,is_local,"
+        "album(images),artists(name)))"
+    )
+    params: dict[str, Any] = {"fields": fields}
+    if market:
+        params["market"] = market
+
+    try:
+        raw = await raw_get(f"v1/playlists/{identifier}", params=params)
+    except Exception:
+        _LOGGER.debug(
+            "Embedded-tracks fallback also failed for %s",
+            media_content_id,
+            exc_info=True,
+        )
+        return []
+
+    try:
+        data = orjson.loads(raw)
+        tracks_block = data.get("tracks") or {}
+        items = tracks_block.get("items") or []
+    except Exception:
+        _LOGGER.debug("Could not parse embedded tracks for %s", media_content_id)
+        return []
+
+    payloads: list[ItemPayload] = []
+    for row in items:
+        if not isinstance(row, dict):
+            continue
+        track = row.get("track")
+        if not isinstance(track, dict) or track.get("is_local"):
+            continue
+        pl = _track_payload_from_raw_dict(track)
+        if pl:
+            payloads.append(pl)
+
+    _LOGGER.debug(
+        "Embedded-tracks fallback for %s: %d tracks parsed",
+        identifier,
+        len(payloads),
+    )
+    return payloads
 
 
 async def _fetch_playlist_metadata(
@@ -834,6 +928,20 @@ async def build_item_response(  # noqa: C901
         )
         if title is None and items:
             title = "Playlist"
+        # Rewrite each track/episode item so its media_content_id encodes the
+        # playlist URI alongside the track URI.  async_play_media splits this
+        # to call start_playback(context_uri=playlist, uri_offset=track) so
+        # the whole playlist continues after the selected track finishes.
+        items = [
+            {
+                **item,
+                "uri": f"{media_content_id}{PLAYLIST_TRACK_CTX_SEP}{item['uri']}",
+                "type": MEDIA_TYPE_PLAYLIST_TRACK,
+            }
+            if item["type"] in (MediaType.TRACK, MediaType.EPISODE)
+            else item
+            for item in items
+        ]
     elif media_content_type == MediaType.ALBUM:
         if album := await spotify.get_album(media_content_id):
             title = album.name
@@ -934,6 +1042,7 @@ def item_payload(item: ItemPayload, *, can_play_artist: bool) -> BrowseMedia:
     can_expand = media_type not in [
         MediaType.TRACK,
         MediaType.EPISODE,
+        MEDIA_TYPE_PLAYLIST_TRACK,
     ]
 
     can_play = (

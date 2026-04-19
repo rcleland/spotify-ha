@@ -31,6 +31,12 @@ SPOTIFY_SCOPES = [
 MEDIA_PLAYER_PREFIX = "spotify://"
 MEDIA_TYPE_SHOW = "show"
 MEDIA_TYPE_USER_SAVED_TRACKS = "current_user_saved_tracks"
+# A track (or episode) that carries its playlist URI as context so playback
+# continues through the playlist after the selected item finishes.
+# Format of the media_content_id: "{playlist_uri}::{item_uri}"
+MEDIA_TYPE_PLAYLIST_TRACK = "playlist_track"
+# Separator used inside the composite MEDIA_TYPE_PLAYLIST_TRACK content ID.
+PLAYLIST_TRACK_CTX_SEP = "::"
 
 PLAYABLE_MEDIA_TYPES = [
     MediaType.PLAYLIST,
@@ -40,4 +46,5 @@ PLAYABLE_MEDIA_TYPES = [
     MEDIA_TYPE_SHOW,
     MediaType.TRACK,
     MEDIA_TYPE_USER_SAVED_TRACKS,
+    MEDIA_TYPE_PLAYLIST_TRACK,
 ]
