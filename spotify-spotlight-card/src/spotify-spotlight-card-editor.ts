@@ -226,6 +226,34 @@ export class SpotifySpotlightCardEditor extends LitElement {
           width). Same scale in tall layout (larger base art there).
         </p>
 
+        <div class="section-title">Background (album art behind card)</div>
+        <ha-textfield
+          label="Background blur (px)"
+          type="number"
+          inputMode="numeric"
+          min="0"
+          max="80"
+          .value=${bgBlur}
+          @input=${this._bgBlurChanged}
+        ></ha-textfield>
+        <p class="hint">
+          Blur radius for the album-art backdrop (0 = sharp, 36 = default,
+          80 = heavy haze).
+        </p>
+        <ha-textfield
+          label="Background opacity (%)"
+          type="number"
+          inputMode="numeric"
+          min="0"
+          max="100"
+          .value=${bgOpacity}
+          @input=${this._bgOpacityChanged}
+        ></ha-textfield>
+        <p class="hint">
+          Opacity of the album-art backdrop layer (100 = full art, 0 = hidden).
+          The dark scrim that keeps text readable is unaffected.
+        </p>
+
         <div>
           <div class="field-label">Now playing text vs album art</div>
           <select
@@ -469,6 +497,18 @@ export class SpotifySpotlightCardEditor extends LitElement {
       corner_climate_scale_percent = Math.min(300, Math.max(50, Math.round(ccsp)));
     }
 
+    let background_blur_px = 36;
+    const bbp = c.background_blur_px;
+    if (typeof bbp === "number" && Number.isFinite(bbp)) {
+      background_blur_px = Math.min(80, Math.max(0, Math.round(bbp)));
+    }
+
+    let background_opacity_percent = 100;
+    const bop = c.background_opacity_percent;
+    if (typeof bop === "number" && Number.isFinite(bop)) {
+      background_opacity_percent = Math.min(100, Math.max(0, Math.round(bop)));
+    }
+
     return {
       type: "custom:spotify-spotlight-card",
       entity: typeof c.entity === "string" ? c.entity : "",
@@ -496,6 +536,8 @@ export class SpotifySpotlightCardEditor extends LitElement {
       source_tablet_mode: c.source_tablet_mode === true,
       up_next_scale_percent,
       corner_climate_scale_percent,
+      background_blur_px,
+      background_opacity_percent,
       show_corner_seconds: c.show_corner_seconds === true,
       show_corner_weather: c.show_corner_weather === true,
       show_corner_weather_icon: c.show_corner_weather_icon === true,
@@ -603,6 +645,26 @@ export class SpotifySpotlightCardEditor extends LitElement {
       return;
     }
     this._merge({ up_next_scale_percent: Math.min(300, Math.max(50, n)) });
+  }
+
+  private _bgBlurChanged(ev: Event): void {
+    const t = ev.target as unknown as HTMLInputElement;
+    const n = parseInt(t.value, 10);
+    if (!Number.isFinite(n)) {
+      this._merge({ background_blur_px: 36 });
+      return;
+    }
+    this._merge({ background_blur_px: Math.min(80, Math.max(0, n)) });
+  }
+
+  private _bgOpacityChanged(ev: Event): void {
+    const t = ev.target as unknown as HTMLInputElement;
+    const n = parseInt(t.value, 10);
+    if (!Number.isFinite(n)) {
+      this._merge({ background_opacity_percent: 100 });
+      return;
+    }
+    this._merge({ background_opacity_percent: Math.min(100, Math.max(0, n)) });
   }
 
   private _cornerClimateScaleChanged(ev: Event): void {
