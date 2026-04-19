@@ -338,59 +338,91 @@ def _playlist_api_row_to_payload(row: dict[str, Any]) -> ItemPayload | None:
     return _track_payload_from_raw_dict(track)
 
 
-async def _load_playlist_track_payloads(
-    spotify: SpotifyClient, media_content_id: str
+async def _fetch_playlist_rows_via_api(
+    spotify: SpotifyClient,
+    media_content_id: str,
+    *,
+    market: str | None,
 ) -> list[ItemPayload]:
-    """Paged playlist tracks with market + relaxed parsing (followed / others' playlists).
+    """Page through `/playlists/{id}/items` directly, with a relaxed row parser.
 
-    Non-owned playlists (editorial, friends', etc.) frequently contain tracks
-    that are region-restricted. Without a `market`, Spotify returns those rows
-    with `track: null`, and our row parser drops them — leaving an empty list.
-    Using `market=from_token` makes Spotify substitute / filter using the
-    authenticated user's country automatically, so the playable rows survive.
+    The HA-bundled spotifyaio model for `PlaylistTrack` is strict: a single
+    region-restricted row with ``track: null`` causes the whole page to drop.
+    Non-owned (editorial / friends') playlists hit this constantly. Parsing
+    each row independently with `_playlist_api_row_to_payload` keeps the
+    playable rows.
+
+    `market` is included only when we have a real ISO country code. The old
+    `from_token` value was deprecated by Spotify and now causes 4xx silently.
     """
-    market = await _spotify_user_market(spotify) or "from_token"
-    identifier = get_identifier(media_content_id)
     raw_get = getattr(spotify, "_get", None)
+    if raw_get is None:
+        return []
+    identifier = get_identifier(media_content_id)
     payloads: list[ItemPayload] = []
+    offset = 0
+    while offset < _MAX_PLAYLIST_TRACKS_BROWSE:
+        params: dict[str, Any] = {
+            "limit": BROWSE_LIMIT,
+            "offset": offset,
+            "additional_types": "track,episode",
+        }
+        if market:
+            params["market"] = market
+        try:
+            raw = await raw_get(
+                f"v1/playlists/{identifier}/items",
+                params=params,
+            )
+        except Exception:
+            _LOGGER.warning(
+                "Playlist items request failed for %s at offset %s",
+                media_content_id,
+                offset,
+                exc_info=True,
+            )
+            return payloads
+        chunk_items = orjson.loads(raw).get("items") or []
+        if not chunk_items:
+            break
+        for row in chunk_items:
+            if not isinstance(row, dict):
+                continue
+            pl = _playlist_api_row_to_payload(row)
+            if pl:
+                payloads.append(pl)
+        if len(chunk_items) < BROWSE_LIMIT:
+            break
+        offset += BROWSE_LIMIT
+    return payloads
 
-    if raw_get:
-        offset = 0
-        while offset < _MAX_PLAYLIST_TRACKS_BROWSE:
-            params: dict[str, Any] = {
-                "limit": BROWSE_LIMIT,
-                "offset": offset,
-                "additional_types": "track,episode",
-                "market": market,
-            }
-            try:
-                raw = await raw_get(
-                    # Spotify's canonical "Get Playlist Items" endpoint is
-                    # `/tracks` (despite the operation name).
-                    f"v1/playlists/{identifier}/tracks",
-                    params=params,
-                )
-            except Exception:
-                _LOGGER.warning(
-                    "Playlist items request failed for %s at offset %s",
-                    media_content_id,
-                    offset,
-                    exc_info=True,
-                )
-                break
-            chunk_items = orjson.loads(raw).get("items") or []
-            if not chunk_items:
-                break
-            for row in chunk_items:
-                if not isinstance(row, dict):
-                    continue
-                pl = _playlist_api_row_to_payload(row)
-                if pl:
-                    payloads.append(pl)
-            if len(chunk_items) < BROWSE_LIMIT:
-                break
-            offset += BROWSE_LIMIT
 
+async def _load_playlist_track_payloads(
+    spotify: SpotifyClient,
+    media_content_id: str,
+    *,
+    embedded_rows: list[PlaylistTrack] | None = None,
+) -> list[ItemPayload]:
+    """Resolve playlist tracks for browsing.
+
+    Strategy (in order):
+      1. Use the embedded ``playlist.items.items`` rows from
+         ``GET /playlists/{id}`` — this is what worked for owned playlists
+         and avoids an extra request.
+      2. Fall back to ``GET /playlists/{id}/items`` with paging and a
+         relaxed parser — this covers non-owned playlists where the
+         embedded model often parses as zero items.
+      3. Final fallback: ``spotify.get_playlist_items`` via spotifyaio.
+    """
+    if embedded_rows:
+        payloads = _playlist_rows_to_payloads(embedded_rows)
+        if payloads:
+            return payloads
+
+    market = await _spotify_user_market(spotify)
+    payloads = await _fetch_playlist_rows_via_api(
+        spotify, media_content_id, market=market
+    )
     if payloads:
         return payloads
 
@@ -427,16 +459,29 @@ def _playlist_rows_to_payloads(rows: list[PlaylistTrack]) -> list[ItemPayload]:
 async def _browse_playlist_tracks(
     spotify: SpotifyClient, media_content_id: str
 ) -> tuple[str | None, str | None, list[ItemPayload]]:
-    """Resolve playlist title, artwork, and track list (full paging; works for followed lists)."""
+    """Resolve playlist title, artwork, and track list.
+
+    Uses the embedded `playlist.items.items` when present (works great for
+    owned playlists). For non-owned / followed playlists the embedded list
+    is often empty after strict parsing, so we additionally page
+    `GET /playlists/{id}/items` with a relaxed row parser that survives
+    region-restricted ``track: null`` rows.
+    """
     title: str | None = None
     image: str | None = None
+    embedded_rows: list[PlaylistTrack] | None = None
 
     playlist = await async_get_playlist_resilient(spotify, media_content_id)
     if playlist is not None:
         title = playlist.name
         image = playlist.images[0].url if playlist.images else None
+        container = playlist.items
+        if container and container.items:
+            embedded_rows = list(container.items)
 
-    payloads = await _load_playlist_track_payloads(spotify, media_content_id)
+    payloads = await _load_playlist_track_payloads(
+        spotify, media_content_id, embedded_rows=embedded_rows
+    )
     return title, image, payloads
 
 
