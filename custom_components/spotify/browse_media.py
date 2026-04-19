@@ -161,15 +161,22 @@ async def _fetch_playlist_tracks_with_client_credentials(
     *,
     market: str | None,
 ) -> list[ItemPayload]:
-    """Fetch playlist track items using app-level client credentials.
+    """Fetch playlist tracks using app-level client credentials.
 
-    Used as a last resort when the user-scoped token cannot access track items
-    for playlists not owned by the authenticated user.  The Client Credentials
-    flow has different access rules and can read public playlists regardless of
-    developer-mode quota restrictions.
+    ``GET /v1/playlists/{id}/items`` requires the ``playlist-read-private``
+    *user* scope which a Client Credentials token can never satisfy (CC tokens
+    carry no user scopes), so it always returns 401.
+
+    Instead we call ``GET /v1/playlists/{id}`` — the full playlist-object
+    endpoint — which is publicly accessible for public playlists with a CC
+    token and embeds up to 100 tracks in the ``tracks.items`` array.  This is
+    the same shape parsed by ``_fetch_tracks_embedded_in_playlist``; the
+    difference is that the CC token has *different* (less restricted) access
+    than the user token for non-owned playlists in developer-mode apps.
     """
     _LOGGER.warning(
-        "CC fetch: attempting client-credentials fetch for %s", media_content_id
+        "CC fetch: attempting client-credentials playlist fetch for %s",
+        media_content_id,
     )
     token = await _get_client_credentials_token(hass)
     if not token:
@@ -182,124 +189,111 @@ async def _fetch_playlist_tracks_with_client_credentials(
         return []
 
     _LOGGER.warning(
-        "CC fetch: token obtained; requesting /items for %s", media_content_id
+        "CC fetch: token obtained; requesting full playlist object for %s",
+        media_content_id,
     )
     identifier = get_identifier(media_content_id)
     session = async_get_clientsession(hass)
     headers = {"Authorization": f"Bearer {token}"}
 
-    payloads: list[ItemPayload] = []
-    offset = 0
+    params: dict[str, Any] = {}
+    if market:
+        params["market"] = market
 
-    while offset < _MAX_PLAYLIST_TRACKS_BROWSE:
-        params: dict[str, Any] = {
-            "limit": BROWSE_LIMIT,
-            "offset": offset,
-            "additional_types": "track,episode",
-        }
-        if market:
-            params["market"] = market
-
-        try:
-            async with session.get(
-                f"{_SPOTIFY_API_BASE}/v1/playlists/{identifier}/items",
-                params=params,
-                headers=headers,
-            ) as resp:
-                if resp.status == 401:
-                    # Token expired between cache check and request; clear so
-                    # the next browse attempt fetches a fresh one.
-                    _cc_token_cache.pop(DOMAIN, None)
-                    _LOGGER.warning(
-                        "CC fetch: token expired mid-browse for %s (HTTP 401); "
-                        "will retry next browse",
-                        media_content_id,
-                    )
-                    break
-                if resp.status == 403:
-                    body = await resp.text()
-                    _LOGGER.warning(
-                        "CC fetch: also got 403 for playlist %s — Spotify's "
-                        "dev-mode restrictions apply to CC tokens too. "
-                        "Response: %s",
-                        media_content_id,
-                        body[:300],
-                    )
-                    break
-                if resp.status != 200:
-                    body = await resp.text()
-                    _LOGGER.warning(
-                        "CC fetch: unexpected HTTP %d for playlist %s — %s",
-                        resp.status,
-                        media_content_id,
-                        body[:300],
-                    )
-                    break
-                raw = await resp.read()
-        except Exception:
-            _LOGGER.warning(
-                "CC fetch: HTTP request raised exception for %s — "
-                "check HA network connectivity to api.spotify.com",
-                media_content_id,
-                exc_info=True,
-            )
-            break
-
-        try:
-            parsed = orjson.loads(raw)
-        except Exception:
-            _LOGGER.warning(
-                "CC fetch: could not parse JSON response for %s — raw: %s",
-                media_content_id,
-                raw[:200] if raw else b"(empty)",
-                exc_info=True,
-            )
-            break
-
-        chunk_items = parsed.get("items") or []
-        if not chunk_items:
-            _LOGGER.warning(
-                "CC fetch: Spotify returned empty items for %s at offset %d "
-                "(HTTP 200 but no tracks). Full response keys: %s. "
-                "This may mean Spotify's dev-mode restrictions also apply to "
-                "CC tokens for this playlist.",
-                media_content_id,
-                offset,
-                list(parsed.keys()),
-            )
-            break
-
+    try:
+        async with session.get(
+            f"{_SPOTIFY_API_BASE}/v1/playlists/{identifier}",
+            params=params,
+            headers=headers,
+        ) as resp:
+            if resp.status == 401:
+                _cc_token_cache.pop(DOMAIN, None)
+                body = await resp.text()
+                _LOGGER.warning(
+                    "CC fetch: playlist object request got 401 for %s — "
+                    "token may be invalid. Response: %s",
+                    media_content_id,
+                    body[:300],
+                )
+                return []
+            if resp.status == 403:
+                body = await resp.text()
+                _LOGGER.warning(
+                    "CC fetch: playlist object got 403 for %s — this playlist "
+                    "may be private or Spotify's dev-mode restrictions block "
+                    "CC tokens entirely. Response: %s",
+                    media_content_id,
+                    body[:300],
+                )
+                return []
+            if resp.status != 200:
+                body = await resp.text()
+                _LOGGER.warning(
+                    "CC fetch: unexpected HTTP %d for playlist object %s — %s",
+                    resp.status,
+                    media_content_id,
+                    body[:300],
+                )
+                return []
+            raw = await resp.read()
+    except Exception:
         _LOGGER.warning(
-            "CC fetch: received %d raw rows at offset %d for %s",
-            len(chunk_items),
-            offset,
+            "CC fetch: HTTP request raised exception for %s",
             media_content_id,
+            exc_info=True,
         )
-        accepted = 0
-        for row in chunk_items:
-            if not isinstance(row, dict):
-                continue
-            pl = _playlist_api_row_to_payload(row)
-            if pl:
-                payloads.append(pl)
-                accepted += 1
+        return []
 
-        _LOGGER.debug(
-            "CC fetch playlist %s offset %d: %d/%d rows accepted",
-            identifier,
-            offset,
-            accepted,
-            len(chunk_items),
+    try:
+        data = orjson.loads(raw)
+    except Exception:
+        _LOGGER.warning(
+            "CC fetch: could not parse JSON response for %s — raw: %s",
+            media_content_id,
+            raw[:200] if raw else b"(empty)",
+            exc_info=True,
         )
+        return []
 
-        if len(chunk_items) < BROWSE_LIMIT:
-            break
-        offset += BROWSE_LIMIT
+    # The playlist object has tracks embedded under data["tracks"]["items"].
+    # Spotify may also use "items" at the top level in some response shapes,
+    # so check both.
+    tracks_block = data.get("tracks") or data.get("items") or {}
+    items = tracks_block.get("items") or [] if isinstance(tracks_block, dict) else []
+
+    if not items:
+        _LOGGER.warning(
+            "CC fetch: playlist object for %s returned no embedded tracks "
+            "(HTTP 200). Response top-level keys: %s; tracks block keys: %s. "
+            "The playlist may be private, or Spotify does not embed track data "
+            "for dev-mode CC tokens.",
+            media_content_id,
+            list(data.keys()),
+            list(tracks_block.keys()) if isinstance(tracks_block, dict) else tracks_block,
+        )
+        return []
 
     _LOGGER.warning(
-        "CC fetch: finished for %s — returning %d payloads",
+        "CC fetch: got %d embedded track rows for %s — parsing",
+        len(items),
+        media_content_id,
+    )
+    payloads: list[ItemPayload] = []
+    for row in items:
+        if not isinstance(row, dict):
+            continue
+        track = row.get("track") or row.get("item")
+        if not isinstance(track, dict) or track.get("is_local"):
+            continue
+        pl = _track_payload_from_raw_dict(track)
+        if pl:
+            payloads.append(pl)
+
+    _LOGGER.warning(
+        "CC fetch: finished for %s — returning %d/%d payloads",
         media_content_id,
         len(payloads),
+        len(items),
     )
     return payloads
 
