@@ -277,10 +277,10 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
             Number.isFinite(this._config.background_opacity_percent)
             ? String(Math.round(this._config.background_opacity_percent))
             : "100";
-        const headerInset = typeof this._config.header_inset_percent === "number" &&
-            Number.isFinite(this._config.header_inset_percent)
-            ? String(Math.round(this._config.header_inset_percent))
-            : "100";
+        const bodyTopPx = typeof this._config.body_top_px === "number" &&
+            Number.isFinite(this._config.body_top_px)
+            ? String(Math.round(this._config.body_top_px))
+            : "24";
         const tempEntityRaw = (this._config.corner_temperature_entity ?? "").trim();
         const weatherTempFallback = tempEntityRaw.startsWith("weather.") ? tempEntityRaw : "";
         return b `
@@ -446,19 +446,19 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
         </p>
 
         <ha-textfield
-          label="Header clearance — push content below overlays (%)"
+          label="Album art top offset (px)"
           type="number"
           inputMode="numeric"
           min="0"
-          max="200"
-          .value=${headerInset}
-          @change=${this._headerInsetChanged}
+          max="400"
+          .value=${bodyTopPx}
+          @change=${this._bodyTopPxChanged}
         ></ha-textfield>
         <p class="hint">
-          How far to push album art &amp; controls below the top-corner overlays.
-          <strong>100</strong> = fully clear (default).
-          <strong>50</strong> = halfway — good for horizontal dashboards.
-          <strong>0</strong> = no push (full overlap).
+          Pixels from the top of the card to where the album art starts.
+          <strong>24</strong> = natural default. Increase to push the album art lower
+          (e.g. to sit below the 'Up next' overlay on a horizontal dashboard).
+          The 'Up next' and clock/weather overlays never affect this value.
         </p>
 
         <div class="section-title">Time &amp; temperature (top-left)</div>
@@ -623,10 +623,10 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
         if (typeof bop === "number" && Number.isFinite(bop)) {
             background_opacity_percent = Math.min(100, Math.max(0, Math.round(bop)));
         }
-        let header_inset_percent = 100;
-        const hip = c.header_inset_percent;
-        if (typeof hip === "number" && Number.isFinite(hip)) {
-            header_inset_percent = Math.min(200, Math.max(0, Math.round(hip)));
+        let body_top_px = 24;
+        const btp = c.body_top_px;
+        if (typeof btp === "number" && Number.isFinite(btp)) {
+            body_top_px = Math.min(400, Math.max(0, Math.round(btp)));
         }
         return {
             type: "custom:spotify-spotlight-card",
@@ -655,7 +655,7 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
             corner_climate_scale_percent,
             background_blur_px,
             background_opacity_percent,
-            header_inset_percent,
+            body_top_px,
             show_corner_seconds: c.show_corner_seconds === true,
             show_corner_weather: c.show_corner_weather === true,
             show_corner_weather_icon: c.show_corner_weather_icon === true,
@@ -760,14 +760,14 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
         }
         this._merge({ background_opacity_percent: Math.min(100, Math.max(0, n)) });
     }
-    _headerInsetChanged(ev) {
+    _bodyTopPxChanged(ev) {
         const t = ev.target;
         const n = parseInt(t.value, 10);
         if (!Number.isFinite(n)) {
-            this._merge({ header_inset_percent: 100 });
+            this._merge({ body_top_px: 24 });
             return;
         }
-        this._merge({ header_inset_percent: Math.min(200, Math.max(0, n)) });
+        this._merge({ body_top_px: Math.min(400, Math.max(0, n)) });
     }
     _cornerClimateScaleChanged(ev) {
         const t = ev.target;
@@ -851,10 +851,6 @@ window.customCards.push({
     preview: true,
 });
 let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
-    constructor() {
-        super(...arguments);
-        this._lastTopInset = -1;
-    }
     static getStubConfig() {
         return {
             type: "custom:spotify-spotlight-card",
@@ -878,7 +874,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             corner_climate_scale_percent: 100,
             background_blur_px: 36,
             background_opacity_percent: 100,
-            header_inset_percent: 100,
+            body_top_px: 24,
         };
     }
     static getConfigElement() {
@@ -943,10 +939,10 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
         if (typeof bopRaw === "number" && Number.isFinite(bopRaw)) {
             background_opacity_percent = Math.min(100, Math.max(0, Math.round(bopRaw)));
         }
-        const hipRaw = raw.header_inset_percent;
-        let header_inset_percent = 100;
-        if (typeof hipRaw === "number" && Number.isFinite(hipRaw)) {
-            header_inset_percent = Math.min(200, Math.max(0, Math.round(hipRaw)));
+        const btpRaw = raw.body_top_px;
+        let body_top_px = 24;
+        if (typeof btpRaw === "number" && Number.isFinite(btpRaw)) {
+            body_top_px = Math.min(400, Math.max(0, Math.round(btpRaw)));
         }
         this.config = {
             type: "custom:spotify-spotlight-card",
@@ -976,7 +972,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             corner_climate_scale_percent,
             background_blur_px,
             background_opacity_percent,
-            header_inset_percent,
+            body_top_px,
         };
     }
     static { this.styles = i$3 `
@@ -1082,7 +1078,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
       display: flex;
       flex-direction: column;
       gap: var(--spot-gap);
-      padding: calc(24px + var(--spot-top-inset, 0px)) 24px 24px;
+      padding: var(--spot-top-inset, 24px) 24px 24px;
       height: 100%;
       min-height: inherit;
       box-sizing: border-box;
@@ -1426,17 +1422,28 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
 
     .progress-bar {
       display: block;
+      position: relative;
       height: calc(4px * var(--spot-meta-scale, 2));
       border-radius: 4px;
       background: rgba(255, 255, 255, 0.14);
-      overflow: hidden;
+      cursor: pointer;
+      transition: height 0.15s ease;
+      touch-action: none;
+      user-select: none;
+    }
+
+    .progress-bar:hover {
+      height: calc(7px * var(--spot-meta-scale, 2));
     }
 
     .progress-fill {
-      height: 100%;
+      position: absolute;
+      inset: 0;
+      width: 0%;
       background: rgb(29, 185, 84);
       border-radius: 4px;
       transition: width 0.12s linear;
+      pointer-events: none;
     }
 
     .time-row {
@@ -1600,21 +1607,9 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
     connectedCallback() {
         super.connectedCallback();
         this._startTimers();
-        if (typeof ResizeObserver !== "undefined" && !this._resizeObs) {
-            this._resizeObs = new ResizeObserver(() => this._scheduleTopInsetSync());
-            this._resizeObs.observe(this);
-        }
     }
     disconnectedCallback() {
         this._stopTimers();
-        if (this._resizeObs) {
-            this._resizeObs.disconnect();
-            this._resizeObs = undefined;
-        }
-        if (this._topInsetRaf !== undefined && typeof window !== "undefined") {
-            window.cancelAnimationFrame(this._topInsetRaf);
-            this._topInsetRaf = undefined;
-        }
         super.disconnectedCallback();
     }
     /**
@@ -1681,7 +1676,6 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             }
         }
         this._syncLayoutCssVars();
-        this._scheduleTopInsetSync();
     }
     _syncLayoutCssVars() {
         const p = this.config?.text_scale_percent;
@@ -1720,54 +1714,11 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             opacity = Math.min(1, Math.max(0, bo / 100));
         }
         this.style.setProperty("--spot-backdrop-opacity", String(opacity));
-    }
-    /**
-     * Measure the corner overlays after the next paint and reserve enough top
-     * space in `.body` so the album art row never sits underneath them.
-     */
-    _scheduleTopInsetSync() {
-        if (typeof window === "undefined") {
-            return;
-        }
-        if (this._topInsetRaf !== undefined) {
-            return;
-        }
-        this._topInsetRaf = window.requestAnimationFrame(() => {
-            this._topInsetRaf = undefined;
-            this._syncTopInset();
-        });
-    }
-    _syncTopInset() {
-        const root = this.renderRoot;
-        if (!root) {
-            return;
-        }
-        const wrap = root.querySelector(".wrap");
-        if (!wrap) {
-            return;
-        }
-        const wrapTop = wrap.getBoundingClientRect().top;
-        const climate = root.querySelector(".corner-climate");
-        const upNext = root.querySelector(".up-next");
-        let bottom = 0;
-        if (climate) {
-            const r = climate.getBoundingClientRect();
-            bottom = Math.max(bottom, r.bottom - wrapTop);
-        }
-        if (upNext) {
-            const r = upNext.getBoundingClientRect();
-            bottom = Math.max(bottom, r.bottom - wrapTop);
-        }
-        const basePadding = 24;
-        const buffer = 8;
-        const raw = Math.max(0, bottom - basePadding + buffer);
-        const scale = Math.min(2, Math.max(0, (this.config?.header_inset_percent ?? 100) / 100));
-        const inset = Math.round(raw * scale);
-        if (inset === this._lastTopInset) {
-            return;
-        }
-        this._lastTopInset = inset;
-        this.style.setProperty("--spot-top-inset", `${inset}px`);
+        const btp = this.config?.body_top_px;
+        const topPx = (typeof btp === "number" && Number.isFinite(btp))
+            ? Math.min(400, Math.max(0, Math.round(btp)))
+            : 24;
+        this.style.setProperty("--spot-top-inset", `${topPx}px`);
     }
     _stopTimers() {
         if (this._tickTimer !== undefined) {
@@ -1852,6 +1803,54 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             entity_id: eid,
             ...data,
         });
+    }
+    /**
+     * Pointer-based drag-to-seek handler.
+     *
+     * Works for mouse and touch via the Pointer Events API.
+     * - `setPointerCapture` keeps events flowing even when the pointer leaves
+     *   the bar mid-drag.
+     * - Visual feedback is written directly to the DOM during drag so no
+     *   re-render is needed for smooth updates.
+     * - A single `media_seek` service call fires on pointer-up.
+     */
+    _seekBarPointerDown(ev, dur) {
+        if (dur <= 0)
+            return;
+        ev.preventDefault();
+        const bar = ev.currentTarget;
+        const fill = bar.querySelector(".progress-fill");
+        bar.setPointerCapture(ev.pointerId);
+        const getFraction = (clientX) => {
+            const rect = bar.getBoundingClientRect();
+            return Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+        };
+        // Disable the CSS transition during drag so the fill tracks the pointer
+        // without a 120ms lag.
+        if (fill)
+            fill.style.transition = "none";
+        const applyVisual = (f) => {
+            if (fill)
+                fill.style.width = `${f * 100}%`;
+        };
+        // Seek position on initial press.
+        applyVisual(getFraction(ev.clientX));
+        const onMove = (e) => {
+            applyVisual(getFraction(e.clientX));
+        };
+        const onUp = (e) => {
+            bar.removeEventListener("pointermove", onMove);
+            // Restore transition.
+            if (fill)
+                fill.style.transition = "";
+            const fraction = getFraction(e.clientX);
+            void this._callService("media_seek", {
+                seek_position: Math.round(fraction * dur),
+            });
+        };
+        bar.addEventListener("pointermove", onMove);
+        bar.addEventListener("pointerup", onUp, { once: true });
+        bar.addEventListener("pointercancel", onUp, { once: true });
     }
     /** Delta is absolute change on 0–1 scale (e.g. 0.05 = five percentage points). */
     _adjustVolumeLevel(delta) {
@@ -2122,7 +2121,10 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
                   ${dur > 0
             ? b `
                         <div class="progress-wrap">
-                          <div class="progress-bar">
+                          <div
+                            class="progress-bar"
+                            @pointerdown=${(ev) => this._seekBarPointerDown(ev, dur)}
+                          >
                             <div
                               class="progress-fill"
                               style="width:${pct}%"

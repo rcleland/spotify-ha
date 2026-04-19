@@ -545,7 +545,7 @@ async def _load_playlist_track_payloads(
     if payloads:
         return payloads
 
-    _LOGGER.debug(
+    _LOGGER.warning(
         "Paged /items API returned no payloads for %s (market=%s); "
         "trying spotifyaio get_playlist_items as last resort",
         media_content_id,
@@ -554,7 +554,7 @@ async def _load_playlist_track_payloads(
     try:
         rows = await spotify.get_playlist_items(media_content_id)
     except Exception:
-        _LOGGER.debug(
+        _LOGGER.warning(
             "get_playlist_items fallback also failed for %s",
             media_content_id,
             exc_info=True,
@@ -587,35 +587,38 @@ async def _fetch_tracks_embedded_in_playlist(
     *,
     market: str | None,
 ) -> list[ItemPayload]:
-    """Fetch tracks via ``GET /v1/playlists/{id}?fields=tracks.items(...)``
+    """Fetch tracks from ``GET /v1/playlists/{id}`` (full object, no /items sub-path).
 
-    This avoids the ``/items`` sub-endpoint which Spotify's 2026 API changes
-    blocked (403) for non-owned playlists in developer-mode apps.  The full
-    playlist object's embedded ``tracks`` block uses a different code-path on
-    Spotify's side and is not subject to the same restriction.
+    Spotify's 2026 API changes blocked ``/playlists/{id}/items`` (403) for
+    non-owned playlists in developer-mode apps.  We request the full playlist
+    object **without** a ``fields`` filter so Spotify's backend doesn't see an
+    explicit track-items request, which appears to trigger the same restriction
+    as the dedicated ``/items`` endpoint.
 
-    Limited to the first page (~100 tracks) because the ``next`` cursor also
-    points to the forbidden ``/items`` endpoint; better than nothing.
+    Limited to the first page (~100 tracks) returned in the ``tracks`` field of
+    the playlist object.  The ``next`` pagination cursor points back to the
+    forbidden ``/items`` endpoint so we cannot paginate further.
     """
     raw_get = getattr(spotify, "_get", None)
     if raw_get is None:
         return []
     identifier = get_identifier(media_content_id)
 
-    # Request enough fields to build ItemPayload for each track.
-    fields = (
-        "tracks.items(track(id,name,uri,type,is_local,"
-        "album(images),artists(name)))"
-    )
-    params: dict[str, Any] = {"fields": fields}
+    # No ``fields`` filter — let Spotify return the full playlist object.
+    # Requesting ``fields=tracks.items(...)`` explicitly appears to trigger the
+    # same access restriction as GET /playlists/{id}/items for non-owned playlists.
+    params: dict[str, Any] = {}
     if market:
         params["market"] = market
 
     try:
         raw = await raw_get(f"v1/playlists/{identifier}", params=params)
     except Exception:
-        _LOGGER.debug(
-            "Embedded-tracks fallback also failed for %s",
+        _LOGGER.warning(
+            "Playlist full-object fetch failed for %s — Spotify may be blocking "
+            "all track access for non-owned playlists in developer-mode apps. "
+            "Getting the app approved for Extended Quota Mode is the only "
+            "permanent fix.",
             media_content_id,
             exc_info=True,
         )
@@ -623,10 +626,23 @@ async def _fetch_tracks_embedded_in_playlist(
 
     try:
         data = orjson.loads(raw)
-        tracks_block = data.get("tracks") or {}
-        items = tracks_block.get("items") or []
     except Exception:
-        _LOGGER.debug("Could not parse embedded tracks for %s", media_content_id)
+        _LOGGER.warning(
+            "Could not parse playlist response for %s", media_content_id
+        )
+        return []
+
+    tracks_block = data.get("tracks") or {}
+    items = tracks_block.get("items") or []
+
+    if not items:
+        _LOGGER.warning(
+            "Playlist %s returned no embedded track items — Spotify may be "
+            "restricting track access for playlists not owned by this account. "
+            "Raw tracks block: %s",
+            media_content_id,
+            str(tracks_block)[:300],
+        )
         return []
 
     payloads: list[ItemPayload] = []
@@ -641,9 +657,10 @@ async def _fetch_tracks_embedded_in_playlist(
             payloads.append(pl)
 
     _LOGGER.debug(
-        "Embedded-tracks fallback for %s: %d tracks parsed",
+        "Embedded-tracks fallback for %s: %d/%d rows produced payloads",
         identifier,
         len(payloads),
+        len(items),
     )
     return payloads
 
@@ -758,7 +775,6 @@ async def async_browse_media(
 ) -> BrowseMedia:
     """Browse Spotify media."""
     parsed_url = None
-    info = None
 
     # Check if caller is requesting the root nodes
     if media_content_type is None and media_content_id is None:

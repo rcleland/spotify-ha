@@ -709,12 +709,14 @@ export class SpotifySpotlightCard extends LitElement {
 
     .progress-bar {
       display: block;
+      position: relative;
       height: calc(4px * var(--spot-meta-scale, 2));
       border-radius: 4px;
       background: rgba(255, 255, 255, 0.14);
-      overflow: hidden;
       cursor: pointer;
       transition: height 0.15s ease;
+      touch-action: none;
+      user-select: none;
     }
 
     .progress-bar:hover {
@@ -722,7 +724,9 @@ export class SpotifySpotlightCard extends LitElement {
     }
 
     .progress-fill {
-      height: 100%;
+      position: absolute;
+      inset: 0;
+      width: 0%;
       background: rgb(29, 185, 84);
       border-radius: 4px;
       transition: width 0.12s linear;
@@ -1112,11 +1116,57 @@ export class SpotifySpotlightCard extends LitElement {
     });
   }
 
-  private _seekTo(ev: MouseEvent, dur: number): void {
+  /**
+   * Pointer-based drag-to-seek handler.
+   *
+   * Works for mouse and touch via the Pointer Events API.
+   * - `setPointerCapture` keeps events flowing even when the pointer leaves
+   *   the bar mid-drag.
+   * - Visual feedback is written directly to the DOM during drag so no
+   *   re-render is needed for smooth updates.
+   * - A single `media_seek` service call fires on pointer-up.
+   */
+  private _seekBarPointerDown(ev: PointerEvent, dur: number): void {
+    if (dur <= 0) return;
+    ev.preventDefault();
     const bar = ev.currentTarget as HTMLElement;
-    const rect = bar.getBoundingClientRect();
-    const fraction = Math.min(1, Math.max(0, (ev.clientX - rect.left) / rect.width));
-    void this._callService("media_seek", { seek_position: Math.round(fraction * dur) });
+    const fill = bar.querySelector<HTMLElement>(".progress-fill");
+
+    bar.setPointerCapture(ev.pointerId);
+
+    const getFraction = (clientX: number): number => {
+      const rect = bar.getBoundingClientRect();
+      return Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    };
+
+    // Disable the CSS transition during drag so the fill tracks the pointer
+    // without a 120ms lag.
+    if (fill) fill.style.transition = "none";
+
+    const applyVisual = (f: number): void => {
+      if (fill) fill.style.width = `${f * 100}%`;
+    };
+
+    // Seek position on initial press.
+    applyVisual(getFraction(ev.clientX));
+
+    const onMove = (e: PointerEvent): void => {
+      applyVisual(getFraction(e.clientX));
+    };
+
+    const onUp = (e: PointerEvent): void => {
+      bar.removeEventListener("pointermove", onMove);
+      // Restore transition.
+      if (fill) fill.style.transition = "";
+      const fraction = getFraction(e.clientX);
+      void this._callService("media_seek", {
+        seek_position: Math.round(fraction * dur),
+      });
+    };
+
+    bar.addEventListener("pointermove", onMove);
+    bar.addEventListener("pointerup", onUp, { once: true });
+    bar.addEventListener("pointercancel", onUp, { once: true });
   }
 
   /** Delta is absolute change on 0–1 scale (e.g. 0.05 = five percentage points). */
@@ -1422,7 +1472,8 @@ export class SpotifySpotlightCard extends LitElement {
                         <div class="progress-wrap">
                           <div
                             class="progress-bar"
-                            @click=${(ev: MouseEvent) => this._seekTo(ev, dur)}
+                            @pointerdown=${(ev: PointerEvent) =>
+                              this._seekBarPointerDown(ev, dur)}
                           >
                             <div
                               class="progress-fill"

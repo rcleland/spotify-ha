@@ -361,6 +361,14 @@ class SpotifyMediaPlayer(SpotifyEntity, MediaPlayerEntity):
             and PLAYLIST_TRACK_CTX_SEP in media_id
         ):
             ctx_uri, item_uri = media_id.split(PLAYLIST_TRACK_CTX_SEP, 1)
+            # When browsed via the global HA media browser (sidebar / cast
+            # devices), IDs are wrapped as "spotify://<entry_id>/spotify:...".
+            # Unwrap so Spotify's API receives a valid context URI.
+            if ctx_uri.startswith(MEDIA_PLAYER_PREFIX):
+                parsed_ctx = URL(ctx_uri)
+                tail = parsed_ctx.path.lstrip("/")
+                if tail.startswith("spotify:"):
+                    ctx_uri = tail
             device_id = (
                 self.devices.data[0].device_id
                 if not self.currently_playing and self.devices.data
