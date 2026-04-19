@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 from enum import StrEnum
 import logging
+import time
 from typing import TYPE_CHECKING, Any, TypedDict
 
 import orjson
@@ -28,6 +30,10 @@ from homeassistant.components.media_player import (
 )
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.config_entry_oauth2_flow import (
+    async_get_config_entry_implementation,
+)
 
 from .const import (
     DOMAIN,
@@ -43,13 +49,194 @@ from .util import (
     fetch_image_url,
 )
 
+# Module-level cache: token string + monotonic expiry time
+_cc_token_cache: dict[str, tuple[str, float]] = {}
+
 BROWSE_LIMIT = 48
+# Spotify token endpoint
+_SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
+_SPOTIFY_API_BASE = "https://api.spotify.com"
 # Hard cap on how many playlist tracks we page through for browsing.
 # Spotify's API returns up to 100 items per page; 800 = ~17 pages.
 _MAX_PLAYLIST_TRACKS_BROWSE = 800
 
 
 _LOGGER = logging.getLogger(__name__)
+
+
+async def _get_client_credentials_token(hass: HomeAssistant) -> str | None:
+    """Return a cached Spotify client-credentials access token.
+
+    The Client Credentials flow authenticates as the *app* (not a user) and
+    is subject to different quota rules.  Specifically, it can read public
+    playlist track items even when the user-scoped token cannot, because
+    Spotify's 2026 developer-mode restrictions apply only to the Authorization
+    Code flow (per-user tokens), not to app-level tokens.
+
+    The token is cached for most of its 3600-second lifetime to avoid making
+    an extra HTTPS round-trip on every playlist browse.
+    """
+    # Return cached token if still valid (with a 60-second safety margin).
+    cached = _cc_token_cache.get(DOMAIN)
+    if cached and time.monotonic() < cached[1] - 60:
+        return cached[0]
+
+    entries = hass.config_entries.async_entries(
+        DOMAIN, include_disabled=False, include_ignore=False
+    )
+    if not entries:
+        return None
+
+    try:
+        impl = await async_get_config_entry_implementation(hass, entries[0])
+        client_id: str | None = getattr(impl, "client_id", None)
+        client_secret: str | None = getattr(impl, "client_secret", None)
+        if not client_id or not client_secret:
+            _LOGGER.debug(
+                "Cannot obtain client credentials: OAuth implementation does not "
+                "expose client_id / client_secret"
+            )
+            return None
+    except Exception:
+        _LOGGER.debug("Could not retrieve OAuth implementation", exc_info=True)
+        return None
+
+    credentials = base64.b64encode(
+        f"{client_id}:{client_secret}".encode()
+    ).decode()
+    session = async_get_clientsession(hass)
+    try:
+        async with session.post(
+            _SPOTIFY_TOKEN_URL,
+            data={"grant_type": "client_credentials"},
+            headers={
+                "Authorization": f"Basic {credentials}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        ) as resp:
+            if resp.status != 200:
+                _LOGGER.debug(
+                    "Client credentials token request returned %d", resp.status
+                )
+                return None
+            payload = await resp.json()
+            token: str | None = payload.get("access_token")
+            expires_in: int = payload.get("expires_in", 3600)
+            if token:
+                _cc_token_cache[DOMAIN] = (token, time.monotonic() + expires_in)
+            return token
+    except Exception:
+        _LOGGER.debug("Client credentials token request failed", exc_info=True)
+        return None
+
+
+async def _fetch_playlist_tracks_with_client_credentials(
+    hass: HomeAssistant,
+    media_content_id: str,
+    *,
+    market: str | None,
+) -> list[ItemPayload]:
+    """Fetch playlist track items using app-level client credentials.
+
+    Used as a last resort when the user-scoped token cannot access track items
+    for playlists not owned by the authenticated user.  The Client Credentials
+    flow has different access rules and can read public playlists regardless of
+    developer-mode quota restrictions.
+    """
+    token = await _get_client_credentials_token(hass)
+    if not token:
+        _LOGGER.warning(
+            "Could not obtain a client credentials token — public playlist "
+            "tracks will not be available.  Check that the Spotify app's "
+            "client_id and client_secret are configured in Home Assistant "
+            "Application Credentials."
+        )
+        return []
+
+    identifier = get_identifier(media_content_id)
+    session = async_get_clientsession(hass)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    payloads: list[ItemPayload] = []
+    offset = 0
+
+    while offset < _MAX_PLAYLIST_TRACKS_BROWSE:
+        params: dict[str, Any] = {
+            "limit": BROWSE_LIMIT,
+            "offset": offset,
+            "additional_types": "track,episode",
+        }
+        if market:
+            params["market"] = market
+
+        try:
+            async with session.get(
+                f"{_SPOTIFY_API_BASE}/v1/playlists/{identifier}/items",
+                params=params,
+                headers=headers,
+            ) as resp:
+                if resp.status == 401:
+                    # Token expired between cache check and request; clear so
+                    # the next browse attempt fetches a fresh one.
+                    _cc_token_cache.pop(DOMAIN, None)
+                    _LOGGER.debug("Client credentials token expired mid-browse")
+                    break
+                if resp.status == 403:
+                    _LOGGER.warning(
+                        "Client credentials token also got 403 for playlist %s "
+                        "— this playlist may require Extended Quota Mode or may "
+                        "not be publicly accessible",
+                        media_content_id,
+                    )
+                    break
+                if resp.status != 200:
+                    _LOGGER.warning(
+                        "Unexpected HTTP %d for playlist %s (client credentials)",
+                        resp.status,
+                        media_content_id,
+                    )
+                    break
+                raw = await resp.read()
+        except Exception:
+            _LOGGER.debug(
+                "Client credentials request failed for %s",
+                media_content_id,
+                exc_info=True,
+            )
+            break
+
+        try:
+            parsed = orjson.loads(raw)
+        except Exception:
+            _LOGGER.debug("Could not parse CC response for %s", media_content_id)
+            break
+
+        chunk_items = parsed.get("items") or []
+        if not chunk_items:
+            break
+
+        accepted = 0
+        for row in chunk_items:
+            if not isinstance(row, dict):
+                continue
+            pl = _playlist_api_row_to_payload(row)
+            if pl:
+                payloads.append(pl)
+                accepted += 1
+
+        _LOGGER.debug(
+            "CC fetch playlist %s offset %d: %d/%d rows accepted",
+            identifier,
+            offset,
+            accepted,
+            len(chunk_items),
+        )
+
+        if len(chunk_items) < BROWSE_LIMIT:
+            break
+        offset += BROWSE_LIMIT
+
+    return payloads
 
 
 class ItemPayload(TypedDict):
@@ -504,6 +691,7 @@ async def _fetch_playlist_rows_via_api(
 async def _load_playlist_track_payloads(
     spotify: SpotifyClient,
     media_content_id: str,
+    hass: HomeAssistant | None = None,
 ) -> list[ItemPayload]:
     """Resolve playlist tracks for browsing.
 
@@ -515,6 +703,10 @@ async def _load_playlist_track_payloads(
     (which would otherwise be dropped and produce an empty result for
     editorial / non-owned playlists).  Falls back to ``"US"`` when the
     user's country cannot be determined.
+
+    If the user-scoped token is blocked (403) or returns empty results,
+    falls back to the Client Credentials flow (app-level token) which can
+    read public playlists regardless of developer-mode quota restrictions.
     """
     market = await _spotify_user_market(spotify)
     if not market:
@@ -531,36 +723,49 @@ async def _load_playlist_track_payloads(
     except SpotifyForbiddenError:
         # Spotify's 2026 API changes block the /items sub-endpoint for
         # non-owned playlists in developer-mode apps (403 Forbidden).
-        # Fall back to the embedded tracks in the playlist object itself,
-        # which uses a different endpoint and isn't subject to the same rule.
         _LOGGER.debug(
-            "GET /playlists/%s/items returned 403; "
-            "trying embedded-tracks fallback",
+            "GET /playlists/%s/items returned 403; trying fallbacks",
             media_content_id,
         )
         return await _fetch_tracks_embedded_in_playlist(
-            spotify, media_content_id, market=market
+            spotify, media_content_id, market=market, hass=hass
         )
 
     if payloads:
         return payloads
 
-    _LOGGER.warning(
-        "Paged /items API returned no payloads for %s (market=%s); "
-        "trying spotifyaio get_playlist_items as last resort",
+    # Paged /items succeeded but returned nothing — playlist may genuinely
+    # be empty, or the API returned tracks:null.  Try spotifyaio helper then
+    # client credentials as a last resort.
+    _LOGGER.debug(
+        "Paged /items returned no payloads for %s (market=%s); "
+        "trying spotifyaio get_playlist_items",
         media_content_id,
         market,
     )
     try:
         rows = await spotify.get_playlist_items(media_content_id)
+        result = _playlist_rows_to_payloads(rows)
+        if result:
+            return result
     except Exception:
-        _LOGGER.warning(
-            "get_playlist_items fallback also failed for %s",
+        _LOGGER.debug(
+            "get_playlist_items also failed for %s",
             media_content_id,
             exc_info=True,
         )
-        return []
-    return _playlist_rows_to_payloads(rows)
+
+    # Both user-token paths failed — try client credentials for public playlists.
+    if hass is not None:
+        _LOGGER.debug(
+            "User-token paths exhausted for %s; trying client credentials",
+            media_content_id,
+        )
+        return await _fetch_playlist_tracks_with_client_credentials(
+            hass, media_content_id, market=market
+        )
+
+    return []
 
 
 def _playlist_rows_to_payloads(rows: list[PlaylistTrack]) -> list[ItemPayload]:
@@ -586,6 +791,7 @@ async def _fetch_tracks_embedded_in_playlist(
     media_content_id: str,
     *,
     market: str | None,
+    hass: HomeAssistant | None = None,
 ) -> list[ItemPayload]:
     """Fetch tracks from ``GET /v1/playlists/{id}`` (full object, no /items sub-path).
 
@@ -636,13 +842,17 @@ async def _fetch_tracks_embedded_in_playlist(
     items = tracks_block.get("items") or []
 
     if not items:
-        _LOGGER.warning(
-            "Playlist %s returned no embedded track items — Spotify may be "
-            "restricting track access for playlists not owned by this account. "
-            "Raw tracks block: %s",
+        _LOGGER.debug(
+            "Playlist %s full-object returned no embedded track items "
+            "(tracks block: %s) — Spotify is stripping track data for "
+            "non-owned playlists; will try client credentials",
             media_content_id,
-            str(tracks_block)[:300],
+            str(tracks_block)[:200],
         )
+        if hass is not None:
+            return await _fetch_playlist_tracks_with_client_credentials(
+                hass, media_content_id, market=market
+            )
         return []
 
     payloads: list[ItemPayload] = []
@@ -710,7 +920,9 @@ async def _fetch_playlist_metadata(
 
 
 async def _browse_playlist_tracks(
-    spotify: SpotifyClient, media_content_id: str
+    spotify: SpotifyClient,
+    media_content_id: str,
+    hass: HomeAssistant | None = None,
 ) -> tuple[str | None, str | None, list[ItemPayload]]:
     """Resolve playlist title, artwork, and track list.
 
@@ -727,7 +939,9 @@ async def _browse_playlist_tracks(
     title, image = await _fetch_playlist_metadata(
         spotify, media_content_id, current_user_id=current_user_id
     )
-    payloads = await _load_playlist_track_payloads(spotify, media_content_id)
+    payloads = await _load_playlist_track_payloads(
+        spotify, media_content_id, hass=hass
+    )
     return title, image, payloads
 
 
@@ -869,6 +1083,7 @@ async def async_browse_media_internal(
         spotify,
         payload,
         can_play_artist=can_play_artist,
+        hass=hass,
     )
     if response is None:
         raise BrowseError(f"Media not found: {media_content_type} / {media_content_id}")
@@ -880,6 +1095,7 @@ async def build_item_response(  # noqa: C901
     payload: dict[str, str | None],
     *,
     can_play_artist: bool,
+    hass: HomeAssistant | None = None,
 ) -> BrowseMedia | None:
     """Create response payload for the provided media query."""
     media_content_type = payload["media_content_type"]
@@ -940,7 +1156,7 @@ async def build_item_response(  # noqa: C901
             items = [_get_track_item_payload(track) for track in top_tracks]
     elif media_content_type == MediaType.PLAYLIST:
         title, image, items = await _browse_playlist_tracks(
-            spotify, media_content_id
+            spotify, media_content_id, hass=hass
         )
         if title is None and items:
             title = "Playlist"
