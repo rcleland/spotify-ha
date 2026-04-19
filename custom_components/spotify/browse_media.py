@@ -376,7 +376,13 @@ def _playlist_api_row_to_payload(row: dict[str, Any]) -> ItemPayload | None:
     track = row.get("track")
     if track is None and "item" in row:
         track = row["item"]
-    if not isinstance(track, dict) or track.get("is_local"):
+    if track is None:
+        _LOGGER.debug("Playlist row skipped: track is null (region-restricted or removed)")
+        return None
+    if not isinstance(track, dict):
+        _LOGGER.debug("Playlist row skipped: track field is not a dict (%s)", type(track))
+        return None
+    if track.get("is_local"):
         return None
     ttype = track.get("type")
     row_for_model = {**row, "track": track}
@@ -442,15 +448,41 @@ async def _fetch_playlist_rows_via_api(
                 exc_info=True,
             )
             return payloads
-        chunk_items = orjson.loads(raw).get("items") or []
+        parsed = orjson.loads(raw)
+        chunk_items = parsed.get("items") or []
         if not chunk_items:
+            # Log the full response at DEBUG so the user can diagnose why
+            # no items were returned (could be an error payload, an empty
+            # playlist, or a Spotify API change).
+            if parsed.get("error") or not isinstance(parsed.get("items"), list):
+                _LOGGER.warning(
+                    "Spotify returned unexpected response for %s at offset %s: %s",
+                    media_content_id,
+                    offset,
+                    str(raw)[:400],
+                )
+            else:
+                _LOGGER.debug(
+                    "Spotify returned empty items page for %s at offset %s",
+                    media_content_id,
+                    offset,
+                )
             break
+        accepted = 0
         for row in chunk_items:
             if not isinstance(row, dict):
                 continue
             pl = _playlist_api_row_to_payload(row)
             if pl:
                 payloads.append(pl)
+                accepted += 1
+        _LOGGER.debug(
+            "Playlist %s offset %s: %d/%d rows accepted",
+            identifier,
+            offset,
+            accepted,
+            len(chunk_items),
+        )
         if len(chunk_items) < BROWSE_LIMIT:
             break
         offset += BROWSE_LIMIT
@@ -466,13 +498,20 @@ async def _load_playlist_track_payloads(
     Always uses the paged ``GET /playlists/{id}/items`` endpoint with a
     tolerant per-row parser (``_playlist_api_row_to_payload``) that skips
     null / local-file rows instead of aborting on the first bad entry.
-    A ``market`` parameter is sent when the user's country is known so that
-    Spotify substitutes / filters region-restricted tracks rather than
-    returning ``track: null`` rows (which would otherwise be dropped and
-    produce an empty result for editorial / non-owned playlists).
-    Falls back to ``spotify.get_playlist_items`` as a last resort.
+    A ``market`` parameter is sent so that Spotify substitutes / filters
+    region-restricted tracks rather than returning ``track: null`` rows
+    (which would otherwise be dropped and produce an empty result for
+    editorial / non-owned playlists).  Falls back to ``"US"`` when the
+    user's country cannot be determined.
     """
     market = await _spotify_user_market(spotify)
+    if not market:
+        _LOGGER.debug(
+            "Could not determine user market for %s; falling back to US",
+            media_content_id,
+        )
+        market = "US"
+
     payloads = await _fetch_playlist_rows_via_api(
         spotify, media_content_id, market=market
     )
@@ -480,9 +519,10 @@ async def _load_playlist_track_payloads(
         return payloads
 
     _LOGGER.debug(
-        "Paged /items API returned no payloads for %s; "
+        "Paged /items API returned no payloads for %s (market=%s); "
         "trying spotifyaio get_playlist_items as last resort",
         media_content_id,
+        market,
     )
     try:
         rows = await spotify.get_playlist_items(media_content_id)
