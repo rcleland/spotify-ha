@@ -9,7 +9,7 @@ import {
   type CSSResultGroup,
   type TemplateResult,
 } from "lit";
-import { customElement, property, state } from "lit/decorators.js";
+import { customElement, property } from "lit/decorators.js";
 
 import type {
   CornerTemperatureUnit,
@@ -19,26 +19,14 @@ import type {
 } from "./spotify-config";
 
 /**
- * Modern HA frontend exposes `loadCardHelpers()` on `window`. Calling it and
- * instantiating an `entities` card is the canonical way to force HA to
- * register `<ha-entity-picker>` (and friends) for use in custom card editors.
+ * Minimal `hass` shape we read from. HA passes the full object; we only
+ * need `states` for entity autocomplete.
  */
-declare global {
-  interface Window {
-    loadCardHelpers?: () => Promise<{
-      createCardElement: (config: {
-        type: string;
-        [key: string]: unknown;
-      }) => HTMLElement & {
-        constructor?: { getConfigElement?: () => Promise<unknown> };
-      };
-    }>;
-  }
-}
-
-/** Minimal `hass` shape for `ha-entity-picker` — HA passes the full object. */
 export interface HomeAssistantStub {
-  states: Record<string, unknown>;
+  states: Record<
+    string,
+    { attributes?: { friendly_name?: string }; [k: string]: unknown }
+  >;
   [key: string]: unknown;
 }
 
@@ -72,9 +60,6 @@ export class SpotifySpotlightCardEditor extends LitElement {
   @property({ attribute: false, type: Object }) public hass?: HomeAssistantStub;
 
   @property({ type: Object }) private _config: Partial<SpotifySpotlightCardConfig> = {};
-
-  /** True once `<ha-entity-picker>` is registered as a custom element. */
-  @state() private _entityPickerReady = false;
 
   static styles: CSSResultGroup = css`
     .card-config {
@@ -137,6 +122,30 @@ export class SpotifySpotlightCardEditor extends LitElement {
     .link-btn code {
       font-size: 0.85em;
     }
+    .entity-row {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .entity-label {
+      font-size: 0.75rem;
+      color: var(--secondary-text-color);
+    }
+    .entity-input {
+      width: 100%;
+      padding: 12px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--divider-color);
+      background: var(--card-background-color);
+      color: var(--primary-text-color);
+      font: inherit;
+      box-sizing: border-box;
+    }
+    .entity-input:focus {
+      outline: none;
+      border-color: var(--primary-color);
+      box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.18);
+    }
   `;
 
   setConfig(config: SpotifySpotlightCardConfig): void {
@@ -144,21 +153,15 @@ export class SpotifySpotlightCardEditor extends LitElement {
     this.requestUpdate();
   }
 
-  override connectedCallback(): void {
-    super.connectedCallback();
-    void this._ensureEntityPicker();
-  }
-
   /**
-   * Force HA to register `<ha-entity-picker>` so it actually renders inside
-   * our editor. Without this, the element stays an unknown tag with zero
-   * height — the user sees the labels but no dropdown.
-   */
-  /**
-   * Render an entity picker if HA's `<ha-entity-picker>` is registered;
-   * otherwise fall back to a plain text input so the user can always type
-   * the entity ID. The fallback emits the same `value-changed` event shape
-   * the picker handlers expect.
+   * Render an entity picker that does NOT depend on `<ha-entity-picker>` being
+   * registered in the editor context (which is unreliable across HA versions).
+   *
+   * Uses a plain `<input list>` + `<datalist>` so the user gets:
+   *   • a real visible text field they can type into,
+   *   • a native browser dropdown autocompleted from the user's actual
+   *     `hass.states`, filtered to the requested domains,
+   *   • zero dependency on Home Assistant custom elements being loaded.
    */
   private _renderEntityField(opts: {
     label: string;
@@ -166,67 +169,63 @@ export class SpotifySpotlightCardEditor extends LitElement {
     placeholder?: string;
     includeDomains?: string[];
     onChange: (entityId: string) => void;
+    note?: TemplateResult | string;
   }): TemplateResult {
-    const fire = (entityId: string): void =>
-      opts.onChange(entityId.trim());
+    const states = (this.hass?.states ?? {}) as Record<
+      string,
+      { attributes?: { friendly_name?: string } }
+    >;
+    const domains = opts.includeDomains;
+    const allIds = Object.keys(states).sort();
+    const filtered = domains?.length
+      ? allIds.filter((id) =>
+          domains.some((d) => id.startsWith(`${d}.`)),
+        )
+      : allIds;
 
-    if (this._entityPickerReady) {
-      return html`
-        <ha-entity-picker
-          .hass=${(this.hass ?? { states: {} }) as HomeAssistantStub as never}
-          .value=${opts.value}
-          .label=${opts.label}
-          .includeDomains=${opts.includeDomains ?? null}
-          allow-custom-entity
-          @value-changed=${(ev: CustomEvent<{ value?: string }>) => {
-            ev.stopPropagation();
-            fire(typeof ev.detail?.value === "string" ? ev.detail.value : "");
-          }}
-        ></ha-entity-picker>
-      `;
-    }
+    const listId = `ent-list-${Math.random().toString(36).slice(2, 10)}`;
+    const fire = (raw: string): void => opts.onChange(raw.trim());
+
+    const matchCount = filtered.length;
+    const hint = matchCount === 0
+      ? html`<p class="warn">
+          No matching entities found
+          ${domains?.length
+            ? html`for ${domains.map((d) => html`<code>${d}.*</code> `)}`
+            : nothing}
+          — type the entity ID directly if you know it.
+        </p>`
+      : html`<p class="hint">
+          ${matchCount} matching ${matchCount === 1 ? "entity" : "entities"}
+          available — start typing to filter.
+        </p>`;
 
     return html`
-      <ha-textfield
-        .label=${opts.label + " (entity ID)"}
-        .placeholder=${opts.placeholder ?? "domain.entity_id"}
-        .value=${opts.value}
-        @change=${(ev: Event) =>
-          fire((ev.target as HTMLInputElement).value)}
-      ></ha-textfield>
-      <p class="hint">
-        Picker is loading… Type the entity ID for now (it works the same way).
-      </p>
+      <div class="entity-row">
+        <label class="entity-label">${opts.label}</label>
+        <input
+          class="entity-input"
+          list=${listId}
+          autocomplete="off"
+          spellcheck="false"
+          .value=${opts.value}
+          placeholder=${opts.placeholder ?? "domain.entity_id"}
+          @change=${(ev: Event) => fire((ev.target as HTMLInputElement).value)}
+          @blur=${(ev: Event) => fire((ev.target as HTMLInputElement).value)}
+        />
+        <datalist id=${listId}>
+          ${filtered.map((id) => {
+            const friendly = states[id]?.attributes?.friendly_name;
+            return html`<option
+              value=${id}
+              label=${friendly ? `${friendly} (${id})` : id}
+            ></option>`;
+          })}
+        </datalist>
+      </div>
+      ${opts.note ? html`<p class="hint">${opts.note}</p>` : nothing}
+      ${hint}
     `;
-  }
-
-  private async _ensureEntityPicker(): Promise<void> {
-    if (typeof window === "undefined") {
-      return;
-    }
-    if (customElements.get("ha-entity-picker")) {
-      this._entityPickerReady = true;
-      return;
-    }
-    try {
-      const helpers = await window.loadCardHelpers?.();
-      if (helpers) {
-        const card = helpers.createCardElement({
-          type: "entities",
-          entities: [],
-        });
-        const ctor = card?.constructor as
-          | { getConfigElement?: () => Promise<unknown> }
-          | undefined;
-        if (ctor?.getConfigElement) {
-          await ctor.getConfigElement();
-        }
-      }
-      await customElements.whenDefined("ha-entity-picker");
-      this._entityPickerReady = true;
-    } catch {
-      this._entityPickerReady = false;
-    }
   }
 
   protected render(): TemplateResult {
