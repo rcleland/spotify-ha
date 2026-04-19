@@ -321,6 +321,13 @@ export class SpotifySpotlightCardEditor extends LitElement {
             @change=${this._cornerTimeChanged}
           ></ha-switch>
         </ha-formfield>
+        <ha-formfield label="Include seconds (e.g. 12:34:56)">
+          <ha-switch
+            .checked=${this._config.show_corner_seconds === true}
+            .disabled=${this._config.show_corner_time !== true}
+            @change=${this._cornerSecondsChanged}
+          ></ha-switch>
+        </ha-formfield>
         <ha-formfield label="Show temperature">
           <ha-switch
             .checked=${showTemp}
@@ -340,6 +347,37 @@ export class SpotifySpotlightCardEditor extends LitElement {
         <p class="hint">
           <strong>weather</strong> uses the <code>temperature</code> attribute;
           <strong>sensor</strong> / <strong>input_number</strong> use the numeric state.
+        </p>
+
+        <ha-formfield label="Show weather state name (e.g. “Partly cloudy”)">
+          <ha-switch
+            .checked=${this._config.show_corner_weather === true}
+            @change=${this._cornerWeatherChanged}
+          ></ha-switch>
+        </ha-formfield>
+        <ha-formfield label="Show weather icon (left of time/temperature)">
+          <ha-switch
+            .checked=${this._config.show_corner_weather_icon === true}
+            @change=${this._cornerWeatherIconChanged}
+          ></ha-switch>
+        </ha-formfield>
+        <div class="field-label">Weather entity (optional)</div>
+        <ha-entity-picker
+          .hass=${hassForPickers as never}
+          .value=${this._config.corner_weather_entity ?? ""}
+          .label=${"weather.* (e.g. Met.no, Tempest)"}
+          .includeDomains=${["weather"]}
+          allow-custom-entity
+          .disabled=${this._config.show_corner_weather !== true &&
+          this._config.show_corner_weather_icon !== true}
+          @value-changed=${this._cornerWeatherEntityChanged}
+        ></ha-entity-picker>
+        <p class="hint">
+          Used for the state name and icon. Leave empty to fall back to the
+          temperature entity if it is a <code>weather.*</code> entity. The state
+          name uses Home Assistant’s own translation (so Met.no’s
+          <em>“Partly cloudy”</em> or Tempest’s <em>“Clear, night”</em> shows
+          as-is).
         </p>
         <div>
           <div class="field-label">Temperature display unit</div>
@@ -446,6 +484,14 @@ export class SpotifySpotlightCardEditor extends LitElement {
       source_tablet_mode: c.source_tablet_mode === true,
       up_next_scale_percent,
       corner_climate_scale_percent,
+      show_corner_seconds: c.show_corner_seconds === true,
+      show_corner_weather: c.show_corner_weather === true,
+      show_corner_weather_icon: c.show_corner_weather_icon === true,
+      corner_weather_entity:
+        typeof c.corner_weather_entity === "string" &&
+        c.corner_weather_entity.trim().length > 0
+          ? c.corner_weather_entity.trim()
+          : undefined,
     };
   }
 
@@ -560,6 +606,28 @@ export class SpotifySpotlightCardEditor extends LitElement {
   private _cornerTimeChanged(ev: Event): void {
     const el = ev.currentTarget as HTMLElement & { checked: boolean };
     this._merge({ show_corner_time: el.checked });
+  }
+
+  private _cornerSecondsChanged(ev: Event): void {
+    const el = ev.currentTarget as HTMLElement & { checked: boolean };
+    this._merge({ show_corner_seconds: el.checked });
+  }
+
+  private _cornerWeatherChanged(ev: Event): void {
+    const el = ev.currentTarget as HTMLElement & { checked: boolean };
+    this._merge({ show_corner_weather: el.checked });
+  }
+
+  private _cornerWeatherIconChanged(ev: Event): void {
+    const el = ev.currentTarget as HTMLElement & { checked: boolean };
+    this._merge({ show_corner_weather_icon: el.checked });
+  }
+
+  private _cornerWeatherEntityChanged(ev: CustomEvent<{ value?: string }>): void {
+    ev.stopPropagation();
+    const raw = ev.detail?.value;
+    const v = typeof raw === "string" ? raw.trim() : "";
+    this._merge({ corner_weather_entity: v.length ? v : undefined });
   }
 
   private _cornerTempEnabledChanged(ev: Event): void {

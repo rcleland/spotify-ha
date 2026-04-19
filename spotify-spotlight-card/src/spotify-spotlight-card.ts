@@ -59,7 +59,29 @@ interface HomeAssistant {
   locale?: {
     language?: string;
   };
+  /** Modern HA helper that returns a localized state label, e.g. "Partly cloudy". */
+  formatEntityState?(stateObj: HassEntity, state?: string): string;
+  localize?(key: string, ...args: unknown[]): string;
 }
+
+/** Standard Home Assistant `weather.*` state → Material Design Icon mapping. */
+const WEATHER_ICON_MAP: Record<string, string> = {
+  "clear-night": "mdi:weather-night",
+  cloudy: "mdi:weather-cloudy",
+  exceptional: "mdi:alert-circle-outline",
+  fog: "mdi:weather-fog",
+  hail: "mdi:weather-hail",
+  lightning: "mdi:weather-lightning",
+  "lightning-rainy": "mdi:weather-lightning-rainy",
+  partlycloudy: "mdi:weather-partly-cloudy",
+  pouring: "mdi:weather-pouring",
+  rainy: "mdi:weather-rainy",
+  snowy: "mdi:weather-snowy",
+  "snowy-rainy": "mdi:weather-snowy-rainy",
+  sunny: "mdi:weather-sunny",
+  windy: "mdi:weather-windy",
+  "windy-variant": "mdi:weather-windy-variant",
+};
 
 /** Same as Home Assistant `MediaPlayerEntityFeature.BROWSE_MEDIA` */
 const MEDIA_PLAYER_FEATURE_BROWSE_MEDIA = 1 << 17;
@@ -86,7 +108,10 @@ export class SpotifySpotlightCard extends LitElement {
       cover_scale_percent: 100,
       poll_interval_seconds: 5,
       show_corner_time: false,
+      show_corner_seconds: false,
       show_corner_temperature: false,
+      show_corner_weather: false,
+      show_corner_weather_icon: false,
       corner_temperature_unit: "auto",
       meta_vertical_align: "center",
       text_scale_percent: 200,
@@ -183,10 +208,18 @@ export class SpotifySpotlightCard extends LitElement {
       cover_scale_percent,
       poll_interval_seconds,
       show_corner_time: raw.show_corner_time === true,
+      show_corner_seconds: raw.show_corner_seconds === true,
       show_corner_temperature: raw.show_corner_temperature === true,
       corner_temperature_entity:
         corner_temperature_entity?.length ? corner_temperature_entity : undefined,
       corner_temperature_unit,
+      show_corner_weather: raw.show_corner_weather === true,
+      show_corner_weather_icon: raw.show_corner_weather_icon === true,
+      corner_weather_entity:
+        typeof raw.corner_weather_entity === "string" &&
+        raw.corner_weather_entity.trim().length > 0
+          ? raw.corner_weather_entity.trim()
+          : undefined,
       meta_vertical_align,
       text_scale_percent,
       source_tablet_mode: raw.source_tablet_mode === true,
@@ -403,7 +436,7 @@ export class SpotifySpotlightCard extends LitElement {
       left: calc(16px * var(--spot-corner-climate-scale, 1));
       z-index: 8;
       max-width: min(
-        calc(220px * var(--spot-corner-climate-scale, 1)),
+        calc(260px * var(--spot-corner-climate-scale, 1)),
         calc(100% - 32px)
       );
       box-sizing: border-box;
@@ -418,6 +451,22 @@ export class SpotifySpotlightCard extends LitElement {
         calc(28px * var(--spot-corner-climate-scale, 1)) rgba(0, 0, 0, 0.35);
       text-align: left;
       pointer-events: none;
+      display: flex;
+      align-items: center;
+      gap: calc(12px * var(--spot-corner-climate-scale, 1));
+    }
+
+    .corner-climate-icon {
+      flex-shrink: 0;
+      color: var(--spot-text);
+      --mdc-icon-size: calc(2.4rem * var(--spot-corner-climate-scale, 1));
+      filter: drop-shadow(0 1px 6px rgba(0, 0, 0, 0.45));
+    }
+
+    .corner-climate-text {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
     }
 
     .corner-time {
@@ -438,7 +487,18 @@ export class SpotifySpotlightCard extends LitElement {
       text-shadow: 0 1px 10px rgba(0, 0, 0, 0.4);
     }
 
-    .corner-climate .corner-temp:first-child {
+    .corner-weather {
+      margin: calc(2px * var(--spot-corner-climate-scale, 1)) 0 0;
+      font-size: calc(0.85rem * var(--spot-corner-climate-scale, 1));
+      font-weight: 500;
+      color: var(--spot-muted);
+      text-shadow: 0 1px 10px rgba(0, 0, 0, 0.4);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .corner-climate-text > :first-child {
       margin-top: 0;
     }
 
@@ -1060,17 +1120,75 @@ export class SpotifySpotlightCard extends LitElement {
     const lang =
       this.hass?.locale?.language ??
       (typeof navigator !== "undefined" ? navigator.language : undefined);
-    try {
-      return new Date().toLocaleTimeString(lang, {
-        hour: "numeric",
-        minute: "2-digit",
-      });
-    } catch {
-      return new Date().toLocaleTimeString(undefined, {
-        hour: "numeric",
-        minute: "2-digit",
-      });
+    const opts: Intl.DateTimeFormatOptions = {
+      hour: "numeric",
+      minute: "2-digit",
+    };
+    if (this.config?.show_corner_seconds === true) {
+      opts.second = "2-digit";
     }
+    try {
+      return new Date().toLocaleTimeString(lang, opts);
+    } catch {
+      return new Date().toLocaleTimeString(undefined, opts);
+    }
+  }
+
+  /**
+   * Resolve which `weather.*` entity to use for state name and icon. Prefers
+   * `corner_weather_entity` when set, otherwise falls back to
+   * `corner_temperature_entity` if that is itself a weather entity.
+   */
+  private _cornerWeatherEntityId(): string | undefined {
+    const explicit = this.config?.corner_weather_entity?.trim();
+    if (explicit && explicit.startsWith("weather.")) {
+      return explicit;
+    }
+    const tempEnt = this.config?.corner_temperature_entity?.trim();
+    if (tempEnt && tempEnt.startsWith("weather.")) {
+      return tempEnt;
+    }
+    return undefined;
+  }
+
+  private _cornerWeatherStateLabel(): string | null {
+    const eid = this._cornerWeatherEntityId();
+    if (!eid || !this.hass) {
+      return null;
+    }
+    const st = this.hass.states[eid];
+    if (!st || !st.state || st.state === "unknown" || st.state === "unavailable") {
+      return null;
+    }
+    if (typeof this.hass.formatEntityState === "function") {
+      try {
+        const formatted = this.hass.formatEntityState(st);
+        if (formatted && formatted.length > 0) {
+          return formatted;
+        }
+      } catch {
+        /* fall through to manual title-casing below */
+      }
+    }
+    return st.state
+      .replace(/[-_]+/g, " ")
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  private _cornerWeatherIcon(): string | null {
+    const eid = this._cornerWeatherEntityId();
+    if (!eid || !this.hass) {
+      return null;
+    }
+    const st = this.hass.states[eid];
+    if (!st) {
+      return null;
+    }
+    const explicitIcon = st.attributes?.icon;
+    if (typeof explicitIcon === "string" && explicitIcon.length > 0) {
+      return explicitIcon;
+    }
+    return WEATHER_ICON_MAP[st.state] ?? "mdi:weather-cloudy";
   }
 
   protected render(): TemplateResult | typeof nothing {
@@ -1140,7 +1258,20 @@ export class SpotifySpotlightCard extends LitElement {
     const showCornerTime = this.config.show_corner_time === true;
     const showCornerTemperature =
       this.config.show_corner_temperature === true;
-    const showCornerClimate = showCornerTime || showCornerTemperature;
+    const weatherEid = this._cornerWeatherEntityId();
+    const weatherLabel =
+      this.config.show_corner_weather === true && weatherEid
+        ? this._cornerWeatherStateLabel()
+        : null;
+    const weatherIcon =
+      this.config.show_corner_weather_icon === true && weatherEid
+        ? this._cornerWeatherIcon()
+        : null;
+    const showCornerClimate =
+      showCornerTime ||
+      showCornerTemperature ||
+      Boolean(weatherLabel) ||
+      Boolean(weatherIcon);
 
     return html`
       <div class="card-shell">
@@ -1152,15 +1283,28 @@ export class SpotifySpotlightCard extends LitElement {
           <div class="scrim"></div>
           ${showCornerClimate
             ? html`
-                <div class="corner-climate" aria-label="Time and temperature">
-                  ${showCornerTime
-                    ? html`<div class="corner-time">${this._cornerTimeLabel()}</div>`
+                <div class="corner-climate" aria-label="Time and weather">
+                  ${weatherIcon
+                    ? html`<ha-icon
+                        class="corner-climate-icon"
+                        .icon=${weatherIcon}
+                      ></ha-icon>`
                     : nothing}
-                  ${showCornerTemperature
-                    ? html`<div class="corner-temp">
-                        ${this._formatCornerTemperature() ?? "—"}
-                      </div>`
-                    : nothing}
+                  <div class="corner-climate-text">
+                    ${showCornerTime
+                      ? html`<div class="corner-time">
+                          ${this._cornerTimeLabel()}
+                        </div>`
+                      : nothing}
+                    ${showCornerTemperature
+                      ? html`<div class="corner-temp">
+                          ${this._formatCornerTemperature() ?? "—"}
+                        </div>`
+                      : nothing}
+                    ${weatherLabel
+                      ? html`<div class="corner-weather">${weatherLabel}</div>`
+                      : nothing}
+                  </div>
                 </div>
               `
             : nothing}

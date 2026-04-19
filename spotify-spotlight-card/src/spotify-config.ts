@@ -35,12 +35,27 @@ export interface SpotifySpotlightCardConfig {
   show_browse_media_button?: boolean;
   /** Show local time (top-left) */
   show_corner_time?: boolean;
+  /** Include seconds in the displayed time (e.g. 12:34:56) */
+  show_corner_seconds?: boolean;
   /** Show temperature from `corner_temperature_entity` (top-left) */
   show_corner_temperature?: boolean;
   /** `weather.*` (uses `temperature` attribute) or numeric `sensor` / `input_number` */
   corner_temperature_entity?: string;
   /** Display unit when showing temperature */
   corner_temperature_unit?: CornerTemperatureUnit;
+  /**
+   * Show the weather state name (e.g. "Partly cloudy") in the corner pane.
+   * Uses `corner_weather_entity` if set, otherwise `corner_temperature_entity`
+   * when that is a `weather.*` entity.
+   */
+  show_corner_weather?: boolean;
+  /** Show the weather icon to the left of the time/temp block. */
+  show_corner_weather_icon?: boolean;
+  /**
+   * Optional `weather.*` entity used for the state name and icon. If not set,
+   * falls back to `corner_temperature_entity` when that is also `weather.*`.
+   */
+  corner_weather_entity?: string;
   /** Title / artist / progress placement vs art (default center) */
   meta_vertical_align?: MetaVerticalAlign;
   /**
