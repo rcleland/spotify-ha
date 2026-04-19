@@ -85,6 +85,9 @@ async def _get_client_credentials_token(hass: HomeAssistant) -> str | None:
         DOMAIN, include_disabled=False, include_ignore=False
     )
     if not entries:
+        _LOGGER.warning(
+            "CC token: no Spotify config entries found — cannot obtain token"
+        )
         return None
 
     try:
@@ -92,13 +95,22 @@ async def _get_client_credentials_token(hass: HomeAssistant) -> str | None:
         client_id: str | None = getattr(impl, "client_id", None)
         client_secret: str | None = getattr(impl, "client_secret", None)
         if not client_id or not client_secret:
-            _LOGGER.debug(
-                "Cannot obtain client credentials: OAuth implementation does not "
-                "expose client_id / client_secret"
+            _LOGGER.warning(
+                "CC token: OAuth implementation (%s) does not expose "
+                "client_id / client_secret — cannot obtain CC token. "
+                "Ensure Spotify credentials are set in Application Credentials.",
+                type(impl).__name__,
             )
             return None
+        _LOGGER.debug(
+            "CC token: obtained client_id=%s from implementation %s",
+            client_id,
+            type(impl).__name__,
+        )
     except Exception:
-        _LOGGER.debug("Could not retrieve OAuth implementation", exc_info=True)
+        _LOGGER.warning(
+            "CC token: could not retrieve OAuth implementation", exc_info=True
+        )
         return None
 
     credentials = base64.b64encode(
@@ -115,8 +127,11 @@ async def _get_client_credentials_token(hass: HomeAssistant) -> str | None:
             },
         ) as resp:
             if resp.status != 200:
-                _LOGGER.debug(
-                    "Client credentials token request returned %d", resp.status
+                body = await resp.text()
+                _LOGGER.warning(
+                    "CC token: token request returned HTTP %d — %s",
+                    resp.status,
+                    body[:300],
                 )
                 return None
             payload = await resp.json()
@@ -124,9 +139,19 @@ async def _get_client_credentials_token(hass: HomeAssistant) -> str | None:
             expires_in: int = payload.get("expires_in", 3600)
             if token:
                 _cc_token_cache[DOMAIN] = (token, time.monotonic() + expires_in)
+                _LOGGER.debug(
+                    "CC token: obtained successfully (expires_in=%d)", expires_in
+                )
+            else:
+                _LOGGER.warning(
+                    "CC token: response did not contain access_token — %s",
+                    str(payload)[:300],
+                )
             return token
     except Exception:
-        _LOGGER.debug("Client credentials token request failed", exc_info=True)
+        _LOGGER.warning(
+            "CC token: token request raised exception", exc_info=True
+        )
         return None
 
 
@@ -143,16 +168,22 @@ async def _fetch_playlist_tracks_with_client_credentials(
     flow has different access rules and can read public playlists regardless of
     developer-mode quota restrictions.
     """
+    _LOGGER.warning(
+        "CC fetch: attempting client-credentials fetch for %s", media_content_id
+    )
     token = await _get_client_credentials_token(hass)
     if not token:
         _LOGGER.warning(
-            "Could not obtain a client credentials token — public playlist "
-            "tracks will not be available.  Check that the Spotify app's "
-            "client_id and client_secret are configured in Home Assistant "
-            "Application Credentials."
+            "CC fetch: could not obtain a client credentials token — public "
+            "playlist tracks will not be available.  Check that the Spotify "
+            "app's client_id and client_secret are configured in HA Application "
+            "Credentials."
         )
         return []
 
+    _LOGGER.warning(
+        "CC fetch: token obtained; requesting /items for %s", media_content_id
+    )
     identifier = get_identifier(media_content_id)
     session = async_get_clientsession(hass)
     headers = {"Authorization": f"Bearer {token}"}
@@ -213,8 +244,23 @@ async def _fetch_playlist_tracks_with_client_credentials(
 
         chunk_items = parsed.get("items") or []
         if not chunk_items:
+            _LOGGER.warning(
+                "CC fetch: Spotify returned empty items for %s at offset %d "
+                "(HTTP 200 but no tracks). Full response keys: %s. "
+                "This may mean Spotify's dev-mode restrictions also apply to "
+                "CC tokens for this playlist.",
+                media_content_id,
+                offset,
+                list(parsed.keys()),
+            )
             break
 
+        _LOGGER.warning(
+            "CC fetch: received %d raw rows at offset %d for %s",
+            len(chunk_items),
+            offset,
+            media_content_id,
+        )
         accepted = 0
         for row in chunk_items:
             if not isinstance(row, dict):
@@ -236,6 +282,11 @@ async def _fetch_playlist_tracks_with_client_credentials(
             break
         offset += BROWSE_LIMIT
 
+    _LOGGER.warning(
+        "CC fetch: finished for %s — returning %d payloads",
+        media_content_id,
+        len(payloads),
+    )
     return payloads
 
 
@@ -726,8 +777,9 @@ async def _load_playlist_track_payloads(
     except SpotifyForbiddenError:
         # Spotify's 2026 API changes block the /items sub-endpoint for
         # non-owned playlists in developer-mode apps (403 Forbidden).
-        _LOGGER.debug(
-            "GET /playlists/%s/items returned 403; trying fallbacks",
+        _LOGGER.warning(
+            "GET /playlists/%s/items returned 403 (SpotifyForbiddenError); "
+            "trying embedded-tracks fallback then client credentials",
             media_content_id,
         )
         return await _fetch_tracks_embedded_in_playlist(
@@ -740,9 +792,9 @@ async def _load_playlist_track_payloads(
     # Paged /items succeeded but returned nothing — playlist may genuinely
     # be empty, or the API returned tracks:null.  Try spotifyaio helper then
     # client credentials as a last resort.
-    _LOGGER.debug(
+    _LOGGER.warning(
         "Paged /items returned no payloads for %s (market=%s); "
-        "trying spotifyaio get_playlist_items",
+        "trying spotifyaio get_playlist_items then client credentials",
         media_content_id,
         market,
     )
@@ -752,7 +804,7 @@ async def _load_playlist_track_payloads(
         if result:
             return result
     except Exception:
-        _LOGGER.debug(
+        _LOGGER.warning(
             "get_playlist_items also failed for %s",
             media_content_id,
             exc_info=True,
@@ -760,7 +812,7 @@ async def _load_playlist_track_payloads(
 
     # Both user-token paths failed — try client credentials for public playlists.
     if hass is not None:
-        _LOGGER.debug(
+        _LOGGER.warning(
             "User-token paths exhausted for %s; trying client credentials",
             media_content_id,
         )
@@ -768,6 +820,11 @@ async def _load_playlist_track_payloads(
             hass, media_content_id, market=market
         )
 
+    _LOGGER.warning(
+        "No hass instance available for CC fallback — cannot load tracks "
+        "for %s",
+        media_content_id,
+    )
     return []
 
 
@@ -851,17 +908,22 @@ async def _fetch_tracks_embedded_in_playlist(
     items = tracks_block.get("items") or []
 
     if not items:
-        _LOGGER.debug(
+        _LOGGER.warning(
             "Playlist %s full-object returned no embedded track items "
-            "(block: %s) — Spotify only provides this field for owned/"
+            "(block keys: %s) — Spotify only provides this field for owned/"
             "collaborative playlists; trying client credentials for public access",
             media_content_id,
-            str(tracks_block)[:200],
+            list(tracks_block.keys()) if isinstance(tracks_block, dict) else tracks_block,
         )
         if hass is not None:
             return await _fetch_playlist_tracks_with_client_credentials(
                 hass, media_content_id, market=market
             )
+        _LOGGER.warning(
+            "No hass available for CC fallback after embedded-tracks returned "
+            "nothing for %s",
+            media_content_id,
+        )
         return []
 
     payloads: list[ItemPayload] = []
