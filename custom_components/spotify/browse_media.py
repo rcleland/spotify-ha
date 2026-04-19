@@ -210,27 +210,36 @@ async def _fetch_playlist_tracks_with_client_credentials(
                     # Token expired between cache check and request; clear so
                     # the next browse attempt fetches a fresh one.
                     _cc_token_cache.pop(DOMAIN, None)
-                    _LOGGER.debug("Client credentials token expired mid-browse")
-                    break
-                if resp.status == 403:
                     _LOGGER.warning(
-                        "Client credentials token also got 403 for playlist %s "
-                        "— this playlist may require Extended Quota Mode or may "
-                        "not be publicly accessible",
+                        "CC fetch: token expired mid-browse for %s (HTTP 401); "
+                        "will retry next browse",
                         media_content_id,
                     )
                     break
-                if resp.status != 200:
+                if resp.status == 403:
+                    body = await resp.text()
                     _LOGGER.warning(
-                        "Unexpected HTTP %d for playlist %s (client credentials)",
+                        "CC fetch: also got 403 for playlist %s — Spotify's "
+                        "dev-mode restrictions apply to CC tokens too. "
+                        "Response: %s",
+                        media_content_id,
+                        body[:300],
+                    )
+                    break
+                if resp.status != 200:
+                    body = await resp.text()
+                    _LOGGER.warning(
+                        "CC fetch: unexpected HTTP %d for playlist %s — %s",
                         resp.status,
                         media_content_id,
+                        body[:300],
                     )
                     break
                 raw = await resp.read()
         except Exception:
-            _LOGGER.debug(
-                "Client credentials request failed for %s",
+            _LOGGER.warning(
+                "CC fetch: HTTP request raised exception for %s — "
+                "check HA network connectivity to api.spotify.com",
                 media_content_id,
                 exc_info=True,
             )
@@ -239,7 +248,12 @@ async def _fetch_playlist_tracks_with_client_credentials(
         try:
             parsed = orjson.loads(raw)
         except Exception:
-            _LOGGER.debug("Could not parse CC response for %s", media_content_id)
+            _LOGGER.warning(
+                "CC fetch: could not parse JSON response for %s — raw: %s",
+                media_content_id,
+                raw[:200] if raw else b"(empty)",
+                exc_info=True,
+            )
             break
 
         chunk_items = parsed.get("items") or []
