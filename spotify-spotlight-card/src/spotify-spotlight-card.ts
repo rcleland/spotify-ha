@@ -265,6 +265,7 @@ export class SpotifySpotlightCard extends LitElement {
       --spot-corner-climate-scale: 1;
       --spot-backdrop-blur: 36px;
       --spot-backdrop-opacity: 1;
+      --spot-top-inset: 0px;
       color: var(--spot-text);
       font-family: var(--ha-font-family-body, ui-sans-serif, system-ui);
       -webkit-font-smoothing: antialiased;
@@ -350,7 +351,7 @@ export class SpotifySpotlightCard extends LitElement {
       display: flex;
       flex-direction: column;
       gap: var(--spot-gap);
-      padding: 24px;
+      padding: calc(24px + var(--spot-top-inset, 0px)) 24px 24px;
       height: 100%;
       min-height: inherit;
       box-sizing: border-box;
@@ -866,13 +867,27 @@ export class SpotifySpotlightCard extends LitElement {
     }
   `;
 
+  private _resizeObs: ResizeObserver | undefined;
+
   override connectedCallback(): void {
     super.connectedCallback();
     this._startTimers();
+    if (typeof ResizeObserver !== "undefined" && !this._resizeObs) {
+      this._resizeObs = new ResizeObserver(() => this._scheduleTopInsetSync());
+      this._resizeObs.observe(this);
+    }
   }
 
   override disconnectedCallback(): void {
     this._stopTimers();
+    if (this._resizeObs) {
+      this._resizeObs.disconnect();
+      this._resizeObs = undefined;
+    }
+    if (this._topInsetRaf !== undefined && typeof window !== "undefined") {
+      window.cancelAnimationFrame(this._topInsetRaf);
+      this._topInsetRaf = undefined;
+    }
     super.disconnectedCallback();
   }
 
@@ -941,6 +956,7 @@ export class SpotifySpotlightCard extends LitElement {
     }
 
     this._syncLayoutCssVars();
+    this._scheduleTopInsetSync();
   }
 
   private _syncLayoutCssVars(): void {
@@ -985,6 +1001,57 @@ export class SpotifySpotlightCard extends LitElement {
       opacity = Math.min(1, Math.max(0, bo / 100));
     }
     this.style.setProperty("--spot-backdrop-opacity", String(opacity));
+  }
+
+  private _topInsetRaf: number | undefined;
+  private _lastTopInset = -1;
+
+  /**
+   * Measure the corner overlays after the next paint and reserve enough top
+   * space in `.body` so the album art row never sits underneath them.
+   */
+  private _scheduleTopInsetSync(): void {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (this._topInsetRaf !== undefined) {
+      return;
+    }
+    this._topInsetRaf = window.requestAnimationFrame(() => {
+      this._topInsetRaf = undefined;
+      this._syncTopInset();
+    });
+  }
+
+  private _syncTopInset(): void {
+    const root = this.renderRoot as ShadowRoot | null;
+    if (!root) {
+      return;
+    }
+    const wrap = root.querySelector(".wrap") as HTMLElement | null;
+    if (!wrap) {
+      return;
+    }
+    const wrapTop = wrap.getBoundingClientRect().top;
+    const climate = root.querySelector(".corner-climate") as HTMLElement | null;
+    const upNext = root.querySelector(".up-next") as HTMLElement | null;
+    let bottom = 0;
+    if (climate) {
+      const r = climate.getBoundingClientRect();
+      bottom = Math.max(bottom, r.bottom - wrapTop);
+    }
+    if (upNext) {
+      const r = upNext.getBoundingClientRect();
+      bottom = Math.max(bottom, r.bottom - wrapTop);
+    }
+    const basePadding = 24;
+    const buffer = 8;
+    const inset = Math.max(0, Math.round(bottom - basePadding + buffer));
+    if (inset === this._lastTopInset) {
+      return;
+    }
+    this._lastTopInset = inset;
+    this.style.setProperty("--spot-top-inset", `${inset}px`);
   }
 
   private _stopTimers(): void {
@@ -1289,8 +1356,11 @@ export class SpotifySpotlightCard extends LitElement {
         (supportedFeat & MEDIA_PLAYER_FEATURE_BROWSE_MEDIA) !== 0);
 
     const showCornerTime = this.config.show_corner_time === true;
-    const showCornerTemperature =
-      this.config.show_corner_temperature === true;
+    const cornerTempLabel =
+      this.config.show_corner_temperature === true
+        ? this._formatCornerTemperature()
+        : null;
+    const showCornerTemperature = Boolean(cornerTempLabel);
     const weatherEid = this._cornerWeatherEntityId();
     const weatherLabel =
       this.config.show_corner_weather === true && weatherEid
@@ -1330,9 +1400,7 @@ export class SpotifySpotlightCard extends LitElement {
                         </div>`
                       : nothing}
                     ${showCornerTemperature
-                      ? html`<div class="corner-temp">
-                          ${this._formatCornerTemperature() ?? "—"}
-                        </div>`
+                      ? html`<div class="corner-temp">${cornerTempLabel}</div>`
                       : nothing}
                     ${weatherLabel
                       ? html`<div class="corner-weather">${weatherLabel}</div>`

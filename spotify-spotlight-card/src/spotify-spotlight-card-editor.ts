@@ -100,6 +100,22 @@ export class SpotifySpotlightCardEditor extends LitElement {
       color: var(--warning-color, #d89614);
       margin: 0;
     }
+    .link-btn {
+      align-self: flex-start;
+      background: none;
+      border: 1px solid var(--divider-color);
+      color: var(--primary-color);
+      cursor: pointer;
+      font: inherit;
+      padding: 6px 10px;
+      border-radius: 8px;
+    }
+    .link-btn:hover {
+      background: rgba(127, 127, 127, 0.08);
+    }
+    .link-btn code {
+      font-size: 0.85em;
+    }
   `;
 
   setConfig(config: SpotifySpotlightCardConfig): void {
@@ -166,6 +182,10 @@ export class SpotifySpotlightCardEditor extends LitElement {
         ? String(Math.round(this._config.background_opacity_percent))
         : "100";
 
+    const tempEntityRaw = (this._config.corner_temperature_entity ?? "").trim();
+    const weatherTempFallback =
+      tempEntityRaw.startsWith("weather.") ? tempEntityRaw : "";
+
     return html`
       <div class="card-config">
         ${!this.hass
@@ -193,7 +213,7 @@ export class SpotifySpotlightCardEditor extends LitElement {
         <ha-textfield
           label="Card title (optional)"
           .value=${this._config.name ?? ""}
-          @input=${this._nameChanged}
+          @change=${this._nameChanged}
         ></ha-textfield>
 
         <div>
@@ -219,7 +239,7 @@ export class SpotifySpotlightCardEditor extends LitElement {
           min="50"
           max="300"
           .value=${coverScale}
-          @input=${this._coverScaleChanged}
+          @change=${this._coverScaleChanged}
         ></ha-textfield>
         <p class="hint">
           100 = default art size; larger values grow the square cover (capped by card
@@ -234,7 +254,7 @@ export class SpotifySpotlightCardEditor extends LitElement {
           min="0"
           max="80"
           .value=${bgBlur}
-          @input=${this._bgBlurChanged}
+          @change=${this._bgBlurChanged}
         ></ha-textfield>
         <p class="hint">
           Blur radius for the album-art backdrop (0 = sharp, 36 = default,
@@ -247,7 +267,7 @@ export class SpotifySpotlightCardEditor extends LitElement {
           min="0"
           max="100"
           .value=${bgOpacity}
-          @input=${this._bgOpacityChanged}
+          @change=${this._bgOpacityChanged}
         ></ha-textfield>
         <p class="hint">
           Opacity of the album-art backdrop layer (100 = full art, 0 = hidden).
@@ -277,7 +297,7 @@ export class SpotifySpotlightCardEditor extends LitElement {
           min="50"
           max="300"
           .value=${textScale}
-          @input=${this._textScaleChanged}
+          @change=${this._textScaleChanged}
         ></ha-textfield>
         <p class="hint">
           Scales the “Now playing” label, title, artist, and progress row (100 = default
@@ -291,7 +311,7 @@ export class SpotifySpotlightCardEditor extends LitElement {
           min="2"
           max="120"
           .value=${poll}
-          @input=${this._pollChanged}
+          @change=${this._pollChanged}
         ></ha-textfield>
         <p class="hint">
           How often to ask Home Assistant to refresh this player (position, title, …).
@@ -333,7 +353,7 @@ export class SpotifySpotlightCardEditor extends LitElement {
           min="50"
           max="300"
           .value=${upNextScale}
-          @input=${this._upNextScaleChanged}
+          @change=${this._upNextScaleChanged}
         ></ha-textfield>
         <p class="hint">
           100 = default size for the overlay text, thumbnail, padding, and corner
@@ -348,7 +368,7 @@ export class SpotifySpotlightCardEditor extends LitElement {
           min="50"
           max="300"
           .value=${cornerClimateScale}
-          @input=${this._cornerClimateScaleChanged}
+          @change=${this._cornerClimateScaleChanged}
         ></ha-textfield>
         <p class="hint">
           100 = default for the clock, temperature line, padding, and glass panel
@@ -381,14 +401,29 @@ export class SpotifySpotlightCardEditor extends LitElement {
           .label=${"Weather, sensor, or input_number"}
           .includeDomains=${["weather", "sensor", "input_number"]}
           allow-custom-entity
-          .disabled=${!showTemp}
           @value-changed=${this._cornerTempEntityChanged}
         ></ha-entity-picker>
         <p class="hint">
           <strong>weather</strong> uses the <code>temperature</code> attribute;
           <strong>sensor</strong> / <strong>input_number</strong> use the numeric state.
         </p>
+        <div>
+          <div class="field-label">Temperature display unit</div>
+          <select
+            class="field"
+            .value=${tempUnit}
+            @change=${this._cornerTempUnitChanged}
+          >
+            ${TEMP_UNIT_OPTIONS.map(
+              (o) =>
+                html`<option value=${o.value} .selected=${tempUnit === o.value}>
+                  ${o.label}
+                </option>`,
+            )}
+          </select>
+        </div>
 
+        <div class="section-title">Weather (state name &amp; icon)</div>
         <ha-formfield label="Show weather state name (e.g. “Partly cloudy”)">
           <ha-switch
             .checked=${this._config.show_corner_weather === true}
@@ -401,40 +436,38 @@ export class SpotifySpotlightCardEditor extends LitElement {
             @change=${this._cornerWeatherIconChanged}
           ></ha-switch>
         </ha-formfield>
-        <div class="field-label">Weather entity (optional)</div>
+        <div class="field-label">Weather entity</div>
         <ha-entity-picker
           .hass=${hassForPickers as never}
           .value=${this._config.corner_weather_entity ?? ""}
           .label=${"weather.* (e.g. Met.no, Tempest)"}
           .includeDomains=${["weather"]}
           allow-custom-entity
-          .disabled=${this._config.show_corner_weather !== true &&
-          this._config.show_corner_weather_icon !== true}
           @value-changed=${this._cornerWeatherEntityChanged}
         ></ha-entity-picker>
         <p class="hint">
-          Used for the state name and icon. Leave empty to fall back to the
-          temperature entity if it is a <code>weather.*</code> entity. The state
-          name uses Home Assistant’s own translation (so Met.no’s
+          Required to show the weather state and icon. The state name uses
+          Home Assistant’s own translation, so Met.no’s
           <em>“Partly cloudy”</em> or Tempest’s <em>“Clear, night”</em> shows
-          as-is).
+          as-is.
+          ${this._config.corner_weather_entity
+            ? nothing
+            : weatherTempFallback
+              ? html` Currently falling back to
+                  <code>${weatherTempFallback}</code>.`
+              : nothing}
         </p>
-        <div>
-          <div class="field-label">Temperature display unit</div>
-          <select
-            class="field"
-            .value=${tempUnit}
-            .disabled=${!showTemp}
-            @change=${this._cornerTempUnitChanged}
-          >
-            ${TEMP_UNIT_OPTIONS.map(
-              (o) =>
-                html`<option value=${o.value} .selected=${tempUnit === o.value}>
-                  ${o.label}
-                </option>`,
-            )}
-          </select>
-        </div>
+        ${weatherTempFallback &&
+        this._config.corner_weather_entity !== weatherTempFallback
+          ? html`<button
+              type="button"
+              class="link-btn"
+              @click=${this._useTempEntityForWeather}
+            >
+              Use temperature entity
+              (<code>${weatherTempFallback}</code>) for weather
+            </button>`
+          : nothing}
       </div>
     `;
   }
@@ -702,6 +735,14 @@ export class SpotifySpotlightCardEditor extends LitElement {
     const raw = ev.detail?.value;
     const v = typeof raw === "string" ? raw.trim() : "";
     this._merge({ corner_weather_entity: v.length ? v : undefined });
+  }
+
+  private _useTempEntityForWeather(): void {
+    const t = (this._config.corner_temperature_entity ?? "").trim();
+    if (!t.startsWith("weather.")) {
+      return;
+    }
+    this._merge({ corner_weather_entity: t });
   }
 
   private _cornerTempEnabledChanged(ev: Event): void {

@@ -134,6 +134,22 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
       color: var(--warning-color, #d89614);
       margin: 0;
     }
+    .link-btn {
+      align-self: flex-start;
+      background: none;
+      border: 1px solid var(--divider-color);
+      color: var(--primary-color);
+      cursor: pointer;
+      font: inherit;
+      padding: 6px 10px;
+      border-radius: 8px;
+    }
+    .link-btn:hover {
+      background: rgba(127, 127, 127, 0.08);
+    }
+    .link-btn code {
+      font-size: 0.85em;
+    }
   `; }
     setConfig(config) {
         this._config = { ...config };
@@ -179,6 +195,8 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
             Number.isFinite(this._config.background_opacity_percent)
             ? String(Math.round(this._config.background_opacity_percent))
             : "100";
+        const tempEntityRaw = (this._config.corner_temperature_entity ?? "").trim();
+        const weatherTempFallback = tempEntityRaw.startsWith("weather.") ? tempEntityRaw : "";
         return b `
       <div class="card-config">
         ${!this.hass
@@ -206,7 +224,7 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
         <ha-textfield
           label="Card title (optional)"
           .value=${this._config.name ?? ""}
-          @input=${this._nameChanged}
+          @change=${this._nameChanged}
         ></ha-textfield>
 
         <div>
@@ -229,7 +247,7 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
           min="50"
           max="300"
           .value=${coverScale}
-          @input=${this._coverScaleChanged}
+          @change=${this._coverScaleChanged}
         ></ha-textfield>
         <p class="hint">
           100 = default art size; larger values grow the square cover (capped by card
@@ -244,7 +262,7 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
           min="0"
           max="80"
           .value=${bgBlur}
-          @input=${this._bgBlurChanged}
+          @change=${this._bgBlurChanged}
         ></ha-textfield>
         <p class="hint">
           Blur radius for the album-art backdrop (0 = sharp, 36 = default,
@@ -257,7 +275,7 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
           min="0"
           max="100"
           .value=${bgOpacity}
-          @input=${this._bgOpacityChanged}
+          @change=${this._bgOpacityChanged}
         ></ha-textfield>
         <p class="hint">
           Opacity of the album-art backdrop layer (100 = full art, 0 = hidden).
@@ -284,7 +302,7 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
           min="50"
           max="300"
           .value=${textScale}
-          @input=${this._textScaleChanged}
+          @change=${this._textScaleChanged}
         ></ha-textfield>
         <p class="hint">
           Scales the “Now playing” label, title, artist, and progress row (100 = default
@@ -298,7 +316,7 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
           min="2"
           max="120"
           .value=${poll}
-          @input=${this._pollChanged}
+          @change=${this._pollChanged}
         ></ha-textfield>
         <p class="hint">
           How often to ask Home Assistant to refresh this player (position, title, …).
@@ -340,7 +358,7 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
           min="50"
           max="300"
           .value=${upNextScale}
-          @input=${this._upNextScaleChanged}
+          @change=${this._upNextScaleChanged}
         ></ha-textfield>
         <p class="hint">
           100 = default size for the overlay text, thumbnail, padding, and corner
@@ -355,7 +373,7 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
           min="50"
           max="300"
           .value=${cornerClimateScale}
-          @input=${this._cornerClimateScaleChanged}
+          @change=${this._cornerClimateScaleChanged}
         ></ha-textfield>
         <p class="hint">
           100 = default for the clock, temperature line, padding, and glass panel
@@ -388,14 +406,26 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
           .label=${"Weather, sensor, or input_number"}
           .includeDomains=${["weather", "sensor", "input_number"]}
           allow-custom-entity
-          .disabled=${!showTemp}
           @value-changed=${this._cornerTempEntityChanged}
         ></ha-entity-picker>
         <p class="hint">
           <strong>weather</strong> uses the <code>temperature</code> attribute;
           <strong>sensor</strong> / <strong>input_number</strong> use the numeric state.
         </p>
+        <div>
+          <div class="field-label">Temperature display unit</div>
+          <select
+            class="field"
+            .value=${tempUnit}
+            @change=${this._cornerTempUnitChanged}
+          >
+            ${TEMP_UNIT_OPTIONS.map((o) => b `<option value=${o.value} .selected=${tempUnit === o.value}>
+                  ${o.label}
+                </option>`)}
+          </select>
+        </div>
 
+        <div class="section-title">Weather (state name &amp; icon)</div>
         <ha-formfield label="Show weather state name (e.g. “Partly cloudy”)">
           <ha-switch
             .checked=${this._config.show_corner_weather === true}
@@ -408,37 +438,38 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
             @change=${this._cornerWeatherIconChanged}
           ></ha-switch>
         </ha-formfield>
-        <div class="field-label">Weather entity (optional)</div>
+        <div class="field-label">Weather entity</div>
         <ha-entity-picker
           .hass=${hassForPickers}
           .value=${this._config.corner_weather_entity ?? ""}
           .label=${"weather.* (e.g. Met.no, Tempest)"}
           .includeDomains=${["weather"]}
           allow-custom-entity
-          .disabled=${this._config.show_corner_weather !== true &&
-            this._config.show_corner_weather_icon !== true}
           @value-changed=${this._cornerWeatherEntityChanged}
         ></ha-entity-picker>
         <p class="hint">
-          Used for the state name and icon. Leave empty to fall back to the
-          temperature entity if it is a <code>weather.*</code> entity. The state
-          name uses Home Assistant’s own translation (so Met.no’s
+          Required to show the weather state and icon. The state name uses
+          Home Assistant’s own translation, so Met.no’s
           <em>“Partly cloudy”</em> or Tempest’s <em>“Clear, night”</em> shows
-          as-is).
+          as-is.
+          ${this._config.corner_weather_entity
+            ? A
+            : weatherTempFallback
+                ? b ` Currently falling back to
+                  <code>${weatherTempFallback}</code>.`
+                : A}
         </p>
-        <div>
-          <div class="field-label">Temperature display unit</div>
-          <select
-            class="field"
-            .value=${tempUnit}
-            .disabled=${!showTemp}
-            @change=${this._cornerTempUnitChanged}
-          >
-            ${TEMP_UNIT_OPTIONS.map((o) => b `<option value=${o.value} .selected=${tempUnit === o.value}>
-                  ${o.label}
-                </option>`)}
-          </select>
-        </div>
+        ${weatherTempFallback &&
+            this._config.corner_weather_entity !== weatherTempFallback
+            ? b `<button
+              type="button"
+              class="link-btn"
+              @click=${this._useTempEntityForWeather}
+            >
+              Use temperature entity
+              (<code>${weatherTempFallback}</code>) for weather
+            </button>`
+            : A}
       </div>
     `;
     }
@@ -664,6 +695,13 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
         const v = typeof raw === "string" ? raw.trim() : "";
         this._merge({ corner_weather_entity: v.length ? v : undefined });
     }
+    _useTempEntityForWeather() {
+        const t = (this._config.corner_temperature_entity ?? "").trim();
+        if (!t.startsWith("weather.")) {
+            return;
+        }
+        this._merge({ corner_weather_entity: t });
+    }
     _cornerTempEnabledChanged(ev) {
         const el = ev.currentTarget;
         this._merge({ show_corner_temperature: el.checked });
@@ -724,6 +762,10 @@ window.customCards.push({
     preview: true,
 });
 let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
+    constructor() {
+        super(...arguments);
+        this._lastTopInset = -1;
+    }
     static getStubConfig() {
         return {
             type: "custom:spotify-spotlight-card",
@@ -858,6 +900,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
       --spot-corner-climate-scale: 1;
       --spot-backdrop-blur: 36px;
       --spot-backdrop-opacity: 1;
+      --spot-top-inset: 0px;
       color: var(--spot-text);
       font-family: var(--ha-font-family-body, ui-sans-serif, system-ui);
       -webkit-font-smoothing: antialiased;
@@ -943,7 +986,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
       display: flex;
       flex-direction: column;
       gap: var(--spot-gap);
-      padding: 24px;
+      padding: calc(24px + var(--spot-top-inset, 0px)) 24px 24px;
       height: 100%;
       min-height: inherit;
       box-sizing: border-box;
@@ -1461,9 +1504,21 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
     connectedCallback() {
         super.connectedCallback();
         this._startTimers();
+        if (typeof ResizeObserver !== "undefined" && !this._resizeObs) {
+            this._resizeObs = new ResizeObserver(() => this._scheduleTopInsetSync());
+            this._resizeObs.observe(this);
+        }
     }
     disconnectedCallback() {
         this._stopTimers();
+        if (this._resizeObs) {
+            this._resizeObs.disconnect();
+            this._resizeObs = undefined;
+        }
+        if (this._topInsetRaf !== undefined && typeof window !== "undefined") {
+            window.cancelAnimationFrame(this._topInsetRaf);
+            this._topInsetRaf = undefined;
+        }
         super.disconnectedCallback();
     }
     /**
@@ -1530,6 +1585,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             }
         }
         this._syncLayoutCssVars();
+        this._scheduleTopInsetSync();
     }
     _syncLayoutCssVars() {
         const p = this.config?.text_scale_percent;
@@ -1568,6 +1624,52 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             opacity = Math.min(1, Math.max(0, bo / 100));
         }
         this.style.setProperty("--spot-backdrop-opacity", String(opacity));
+    }
+    /**
+     * Measure the corner overlays after the next paint and reserve enough top
+     * space in `.body` so the album art row never sits underneath them.
+     */
+    _scheduleTopInsetSync() {
+        if (typeof window === "undefined") {
+            return;
+        }
+        if (this._topInsetRaf !== undefined) {
+            return;
+        }
+        this._topInsetRaf = window.requestAnimationFrame(() => {
+            this._topInsetRaf = undefined;
+            this._syncTopInset();
+        });
+    }
+    _syncTopInset() {
+        const root = this.renderRoot;
+        if (!root) {
+            return;
+        }
+        const wrap = root.querySelector(".wrap");
+        if (!wrap) {
+            return;
+        }
+        const wrapTop = wrap.getBoundingClientRect().top;
+        const climate = root.querySelector(".corner-climate");
+        const upNext = root.querySelector(".up-next");
+        let bottom = 0;
+        if (climate) {
+            const r = climate.getBoundingClientRect();
+            bottom = Math.max(bottom, r.bottom - wrapTop);
+        }
+        if (upNext) {
+            const r = upNext.getBoundingClientRect();
+            bottom = Math.max(bottom, r.bottom - wrapTop);
+        }
+        const basePadding = 24;
+        const buffer = 8;
+        const inset = Math.max(0, Math.round(bottom - basePadding + buffer));
+        if (inset === this._lastTopInset) {
+            return;
+        }
+        this._lastTopInset = inset;
+        this.style.setProperty("--spot-top-inset", `${inset}px`);
     }
     _stopTimers() {
         if (this._tickTimer !== undefined) {
@@ -1831,7 +1933,10 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             (supportedFeat === 0 ||
                 (supportedFeat & MEDIA_PLAYER_FEATURE_BROWSE_MEDIA) !== 0);
         const showCornerTime = this.config.show_corner_time === true;
-        const showCornerTemperature = this.config.show_corner_temperature === true;
+        const cornerTempLabel = this.config.show_corner_temperature === true
+            ? this._formatCornerTemperature()
+            : null;
+        const showCornerTemperature = Boolean(cornerTempLabel);
         const weatherEid = this._cornerWeatherEntityId();
         const weatherLabel = this.config.show_corner_weather === true && weatherEid
             ? this._cornerWeatherStateLabel()
@@ -1867,9 +1972,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
                         </div>`
                 : A}
                     ${showCornerTemperature
-                ? b `<div class="corner-temp">
-                          ${this._formatCornerTemperature() ?? "—"}
-                        </div>`
+                ? b `<div class="corner-temp">${cornerTempLabel}</div>`
                 : A}
                     ${weatherLabel
                 ? b `<div class="corner-weather">${weatherLabel}</div>`
