@@ -292,6 +292,10 @@ SpotifySpotlightCardEditor = __decorate([
 
 /** Same as Home Assistant `MediaPlayerEntityFeature.BROWSE_MEDIA` */
 const MEDIA_PLAYER_FEATURE_BROWSE_MEDIA = 1 << 17;
+const ROOT_BROWSE_ID = {
+    media_content_id: undefined,
+    media_content_type: undefined,
+};
 window.customCards = window.customCards ?? [];
 window.customCards.push({
     type: "spotify-spotlight-card",
@@ -303,6 +307,10 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
     constructor() {
         super(...arguments);
         this._mediaOverlayOpen = false;
+        /** Browse stack for `ha-media-player-browse` — must sync from `media-browsed` or folders never open. */
+        this._browseNavigateIds = [
+            { ...ROOT_BROWSE_ID },
+        ];
         this._onMediaOverlayEscape = (ev) => {
             if (ev.key === "Escape") {
                 this._closeMediaBrowserOverlay();
@@ -624,25 +632,41 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
     }
 
     .controls-main {
-      display: flex;
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
       align-items: center;
       gap: 8px;
-      flex-wrap: wrap;
+      column-gap: 12px;
     }
 
-    .transport-cluster {
+    .transport-side-left {
+      justify-self: start;
       display: flex;
-      flex: 1 1 auto;
       align-items: center;
-      justify-content: center;
       gap: 12px;
       flex-wrap: wrap;
       min-width: 0;
     }
 
+    .transport-cluster {
+      justify-self: center;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .transport-side-right {
+      justify-self: end;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 44px;
+    }
+
     .browse-icon-btn {
       flex: 0 0 auto;
-      margin-left: auto;
       width: 44px;
       height: 44px;
     }
@@ -757,9 +781,22 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
       flex: 0 0 auto;
       display: flex;
       align-items: center;
-      justify-content: flex-end;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px;
       padding: 10px 12px;
       border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .media-browser-toolbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .media-browser-toolbar-actions:last-of-type {
+      margin-left: auto;
     }
 
     .media-browser-toolbar button {
@@ -776,16 +813,20 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
       cursor: pointer;
     }
 
-    .media-browser-toolbar button:hover {
+    .media-browser-toolbar button:hover:not(:disabled) {
       background: rgba(255, 255, 255, 0.14);
     }
 
-    .media-browser-iframe {
+    .media-browser-toolbar button:disabled {
+      opacity: 0.38;
+      cursor: default;
+    }
+
+    .media-browser-panel ha-media-player-browse {
       flex: 1 1 auto;
       min-height: 0;
       width: 100%;
-      border: none;
-      background: var(--primary-background-color, rgb(18, 18, 22));
+      --media-browser-max-height: min(88vh, 840px);
     }
 
     .section-title {
@@ -803,6 +844,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
     connectedCallback() {
         super.connectedCallback();
         this._startTimers();
+        this._preloadMediaPlayerBrowse();
     }
     disconnectedCallback() {
         window.removeEventListener("keydown", this._onMediaOverlayEscape);
@@ -816,6 +858,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
         if (this._mediaOverlayOpen) {
             return;
         }
+        this._browseNavigateIds = [{ ...ROOT_BROWSE_ID }];
         this._mediaOverlayOpen = true;
         window.addEventListener("keydown", this._onMediaOverlayEscape);
     }
@@ -824,6 +867,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             return;
         }
         this._mediaOverlayOpen = false;
+        this._browseNavigateIds = [{ ...ROOT_BROWSE_ID }];
         window.removeEventListener("keydown", this._onMediaOverlayEscape);
     }
     _onMediaBrowseBackdrop(ev) {
@@ -831,17 +875,49 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             this._closeMediaBrowserOverlay();
         }
     }
-    /** Full HA media-browser page in an iframe — `ha-media-player-browse` is not always registered on Lovelace routes. */
-    _mediaBrowserIframeSrc() {
-        const id = this.config?.entity;
-        if (!id || typeof window === "undefined") {
-            return "";
+    /** Warm-load HA media-player chunks so `ha-media-player-browse` upgrades in Lovelace. */
+    _preloadMediaPlayerBrowse() {
+        if (typeof window === "undefined" || customElements.get("ha-media-player-browse")) {
+            return;
         }
-        const path = `/media-browser/${encodeURIComponent(id)}`;
-        if (this.hass?.hassUrl) {
-            return this.hass.hassUrl(path);
+        void window.loadCardHelpers?.().then((h) => {
+            h?.importMoreInfoControl?.("media_player");
+        });
+    }
+    _onMediaBrowsed(ev) {
+        ev.stopPropagation();
+        const detail = ev
+            .detail;
+        const ids = detail?.ids;
+        if (!ids?.length) {
+            return;
         }
-        return new URL(path, window.location.origin).href;
+        this._browseNavigateIds = ids.map((x) => ({ ...x }));
+    }
+    _onBrowseMediaPicked(ev) {
+        ev.stopPropagation();
+        const eid = this.config?.entity;
+        if (!eid || !this.hass) {
+            return;
+        }
+        const detail = ev.detail;
+        const item = detail?.item;
+        if (!item?.media_content_id || !item?.media_content_type) {
+            return;
+        }
+        void this.hass.callService("media_player", "play_media", {
+            entity_id: eid,
+            media_content_id: item.media_content_id,
+            media_content_type: item.media_content_type,
+        });
+    }
+    /** One level up in the browse stack, or close at root (same idea as HA’s media dialog). */
+    _browseToolbarBack() {
+        if (this._browseNavigateIds.length > 1) {
+            this._browseNavigateIds = this._browseNavigateIds.slice(0, -1);
+            return;
+        }
+        this._closeMediaBrowserOverlay();
     }
     updated(changed) {
         super.updated(changed);
@@ -1033,6 +1109,33 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             </div>
 
             <div class="glass-panel controls-main">
+              <div class="transport-side-left">
+                <button
+                  class="ctrl-btn ${repeat !== "off" ? "active" : ""}"
+                  @click=${() => {
+            const next = repeat === "off"
+                ? "all"
+                : repeat === "all"
+                    ? "one"
+                    : "off";
+            return this._callService("repeat_set", { repeat: next });
+        }}
+                  title="Repeat"
+                >
+                  <ha-icon
+                    icon=${repeat === "one"
+            ? "mdi:repeat-once"
+            : "mdi:repeat"}
+                  ></ha-icon>
+                </button>
+                <button
+                  class="ctrl-btn ${shuffle ? "active" : ""}"
+                  @click=${() => this._callService("shuffle_set", { shuffle: !shuffle })}
+                  title="Shuffle"
+                >
+                  <ha-icon icon="mdi:shuffle"></ha-icon>
+                </button>
+              </div>
               <div class="transport-cluster">
                 <button
                   class="ctrl-btn"
@@ -1058,44 +1161,23 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
                 >
                   <ha-icon icon="mdi:skip-next"></ha-icon>
                 </button>
-                <button
-                  class="ctrl-btn ${shuffle ? "active" : ""}"
-                  @click=${() => this._callService("shuffle_set", { shuffle: !shuffle })}
-                  title="Shuffle"
-                >
-                  <ha-icon icon="mdi:shuffle"></ha-icon>
-                </button>
-                <button
-                  class="ctrl-btn ${repeat !== "off" ? "active" : ""}"
-                  @click=${() => {
-            const next = repeat === "off"
-                ? "all"
-                : repeat === "all"
-                    ? "one"
-                    : "off";
-            return this._callService("repeat_set", { repeat: next });
-        }}
-                  title="Repeat"
-                >
-                  <ha-icon
-                    icon=${repeat === "one"
-            ? "mdi:repeat-once"
-            : "mdi:repeat"}
-                  ></ha-icon>
-                </button>
               </div>
-              ${showBrowseBtn
+              <div class="transport-side-right">
+                ${showBrowseBtn
             ? b `
-                    <button
-                      type="button"
-                      class="ctrl-btn browse-icon-btn"
-                      title="Media library"
-                      @click=${() => this._openMediaBrowserOverlay()}
-                    >
-                      <ha-icon icon="mdi:play-box-multiple-outline"></ha-icon>
-                    </button>
-                  `
+                      <button
+                        type="button"
+                        class="ctrl-btn browse-icon-btn"
+                        title="Media library"
+                        @click=${() => this._openMediaBrowserOverlay()}
+                      >
+                        <ha-icon
+                          icon="mdi:play-box-multiple-outline"
+                        ></ha-icon>
+                      </button>
+                    `
             : A}
+              </div>
             </div>
 
           <div class="glass-panel vol-row">
@@ -1194,19 +1276,31 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
                   @click=${(e) => e.stopPropagation()}
                 >
                   <div class="media-browser-toolbar">
-                    <button
-                      type="button"
-                      @click=${() => this._closeMediaBrowserOverlay()}
-                    >
-                      <ha-icon icon="mdi:close"></ha-icon>
-                      Close
-                    </button>
+                    <div class="media-browser-toolbar-actions">
+                      <button type="button" @click=${() => this._browseToolbarBack()}>
+                        <ha-icon icon="mdi:arrow-left"></ha-icon>
+                        Back
+                      </button>
+                    </div>
+                    <div class="media-browser-toolbar-actions">
+                      <button
+                        type="button"
+                        @click=${() => this._closeMediaBrowserOverlay()}
+                      >
+                        <ha-icon icon="mdi:close"></ha-icon>
+                        Close
+                      </button>
+                    </div>
                   </div>
-                  <iframe
-                    class="media-browser-iframe"
-                    title="Media library"
-                    src=${this._mediaBrowserIframeSrc()}
-                  ></iframe>
+                  <ha-media-player-browse
+                    .hass=${this.hass}
+                    .entityId=${this.config.entity}
+                    .action=${"play"}
+                    .dialog=${true}
+                    .navigateIds=${this._browseNavigateIds}
+                    @media-browsed=${this._onMediaBrowsed}
+                    @media-picked=${this._onBrowseMediaPicked}
+                  ></ha-media-player-browse>
                 </div>
               </div>
             `
@@ -1224,6 +1318,9 @@ __decorate([
 __decorate([
     r()
 ], SpotifySpotlightCard.prototype, "_mediaOverlayOpen", void 0);
+__decorate([
+    r()
+], SpotifySpotlightCard.prototype, "_browseNavigateIds", void 0);
 SpotifySpotlightCard = __decorate([
     t("spotify-spotlight-card")
 ], SpotifySpotlightCard);
