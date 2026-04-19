@@ -389,6 +389,19 @@ class SpotifyMediaPlayer(SpotifyEntity, MediaPlayerEntity):
         elif media_type in PLAYABLE_MEDIA_TYPES:
             context_uri = media_id
 
+            # Strip the HA entry-prefix (spotify://<entry_id>/spotify:...) that
+            # the global media browser adds when rewriting child media_content_ids.
+            # Without this, the raw prefixed URL would be sent to Spotify's API
+            # and rejected.  The same stripping is done for PLAYLIST_TRACK above.
+            if context_uri.startswith(MEDIA_PLAYER_PREFIX):
+                try:
+                    _parsed = URL(context_uri)
+                    _tail = _parsed.path.lstrip("/")
+                    if _tail.startswith("spotify:"):
+                        context_uri = _tail
+                except Exception:
+                    pass
+
             if media_type == MEDIA_TYPE_USER_SAVED_TRACKS:
                 user_data = await self.coordinator.client.get_current_user()
                 context_uri = f"spotify:user:{user_data.user_id}:collection"

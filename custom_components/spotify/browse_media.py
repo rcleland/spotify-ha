@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import base64
 from enum import StrEnum
 import logging
-import time
 from typing import TYPE_CHECKING, Any, TypedDict
 
 import orjson
@@ -30,13 +28,8 @@ from homeassistant.components.media_player import (
 )
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.config_entry_oauth2_flow import (
-    async_get_config_entry_implementation,
-)
 
 from .const import (
-    DOMAIN,
     MEDIA_PLAYER_PREFIX,
     MEDIA_TYPE_PLAYLIST_TRACK,
     MEDIA_TYPE_SHOW,
@@ -49,13 +42,7 @@ from .util import (
     fetch_image_url,
 )
 
-# Module-level cache: token string + monotonic expiry time
-_cc_token_cache: dict[str, tuple[str, float]] = {}
-
 BROWSE_LIMIT = 48
-# Spotify token endpoint
-_SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
-_SPOTIFY_API_BASE = "https://api.spotify.com"
 # Hard cap on how many playlist tracks we page through for browsing.
 # Spotify's API returns up to 100 items per page; 800 = ~17 pages.
 _MAX_PLAYLIST_TRACKS_BROWSE = 800
@@ -64,238 +51,6 @@ _MAX_PLAYLIST_TRACKS_BROWSE = 800
 _LOGGER = logging.getLogger(__name__)
 
 
-async def _get_client_credentials_token(hass: HomeAssistant) -> str | None:
-    """Return a cached Spotify client-credentials access token.
-
-    The Client Credentials flow authenticates as the *app* (not a user) and
-    is subject to different quota rules.  Specifically, it can read public
-    playlist track items even when the user-scoped token cannot, because
-    Spotify's 2026 developer-mode restrictions apply only to the Authorization
-    Code flow (per-user tokens), not to app-level tokens.
-
-    The token is cached for most of its 3600-second lifetime to avoid making
-    an extra HTTPS round-trip on every playlist browse.
-    """
-    # Return cached token if still valid (with a 60-second safety margin).
-    cached = _cc_token_cache.get(DOMAIN)
-    if cached and time.monotonic() < cached[1] - 60:
-        return cached[0]
-
-    entries = hass.config_entries.async_entries(
-        DOMAIN, include_disabled=False, include_ignore=False
-    )
-    if not entries:
-        _LOGGER.warning(
-            "CC token: no Spotify config entries found — cannot obtain token"
-        )
-        return None
-
-    try:
-        impl = await async_get_config_entry_implementation(hass, entries[0])
-        client_id: str | None = getattr(impl, "client_id", None)
-        client_secret: str | None = getattr(impl, "client_secret", None)
-        if not client_id or not client_secret:
-            _LOGGER.warning(
-                "CC token: OAuth implementation (%s) does not expose "
-                "client_id / client_secret — cannot obtain CC token. "
-                "Ensure Spotify credentials are set in Application Credentials.",
-                type(impl).__name__,
-            )
-            return None
-        _LOGGER.debug(
-            "CC token: obtained client_id=%s from implementation %s",
-            client_id,
-            type(impl).__name__,
-        )
-    except Exception:
-        _LOGGER.warning(
-            "CC token: could not retrieve OAuth implementation", exc_info=True
-        )
-        return None
-
-    credentials = base64.b64encode(
-        f"{client_id}:{client_secret}".encode()
-    ).decode()
-    session = async_get_clientsession(hass)
-    try:
-        async with session.post(
-            _SPOTIFY_TOKEN_URL,
-            data={"grant_type": "client_credentials"},
-            headers={
-                "Authorization": f"Basic {credentials}",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-        ) as resp:
-            if resp.status != 200:
-                body = await resp.text()
-                _LOGGER.warning(
-                    "CC token: token request returned HTTP %d — %s",
-                    resp.status,
-                    body[:300],
-                )
-                return None
-            payload = await resp.json()
-            token: str | None = payload.get("access_token")
-            expires_in: int = payload.get("expires_in", 3600)
-            if token:
-                _cc_token_cache[DOMAIN] = (token, time.monotonic() + expires_in)
-                _LOGGER.debug(
-                    "CC token: obtained successfully (expires_in=%d)", expires_in
-                )
-            else:
-                _LOGGER.warning(
-                    "CC token: response did not contain access_token — %s",
-                    str(payload)[:300],
-                )
-            return token
-    except Exception:
-        _LOGGER.warning(
-            "CC token: token request raised exception", exc_info=True
-        )
-        return None
-
-
-async def _fetch_playlist_tracks_with_client_credentials(
-    hass: HomeAssistant,
-    media_content_id: str,
-    *,
-    market: str | None,
-) -> list[ItemPayload]:
-    """Fetch playlist tracks using app-level client credentials.
-
-    ``GET /v1/playlists/{id}/items`` requires the ``playlist-read-private``
-    *user* scope which a Client Credentials token can never satisfy (CC tokens
-    carry no user scopes), so it always returns 401.
-
-    Instead we call ``GET /v1/playlists/{id}`` — the full playlist-object
-    endpoint — which is publicly accessible for public playlists with a CC
-    token and embeds up to 100 tracks in the ``tracks.items`` array.  This is
-    the same shape parsed by ``_fetch_tracks_embedded_in_playlist``; the
-    difference is that the CC token has *different* (less restricted) access
-    than the user token for non-owned playlists in developer-mode apps.
-    """
-    _LOGGER.warning(
-        "CC fetch: attempting client-credentials playlist fetch for %s",
-        media_content_id,
-    )
-    token = await _get_client_credentials_token(hass)
-    if not token:
-        _LOGGER.warning(
-            "CC fetch: could not obtain a client credentials token — public "
-            "playlist tracks will not be available.  Check that the Spotify "
-            "app's client_id and client_secret are configured in HA Application "
-            "Credentials."
-        )
-        return []
-
-    _LOGGER.warning(
-        "CC fetch: token obtained; requesting full playlist object for %s",
-        media_content_id,
-    )
-    identifier = get_identifier(media_content_id)
-    session = async_get_clientsession(hass)
-    headers = {"Authorization": f"Bearer {token}"}
-
-    params: dict[str, Any] = {}
-    if market:
-        params["market"] = market
-
-    try:
-        async with session.get(
-            f"{_SPOTIFY_API_BASE}/v1/playlists/{identifier}",
-            params=params,
-            headers=headers,
-        ) as resp:
-            if resp.status == 401:
-                _cc_token_cache.pop(DOMAIN, None)
-                body = await resp.text()
-                _LOGGER.warning(
-                    "CC fetch: playlist object request got 401 for %s — "
-                    "token may be invalid. Response: %s",
-                    media_content_id,
-                    body[:300],
-                )
-                return []
-            if resp.status == 403:
-                body = await resp.text()
-                _LOGGER.warning(
-                    "CC fetch: playlist object got 403 for %s — this playlist "
-                    "may be private or Spotify's dev-mode restrictions block "
-                    "CC tokens entirely. Response: %s",
-                    media_content_id,
-                    body[:300],
-                )
-                return []
-            if resp.status != 200:
-                body = await resp.text()
-                _LOGGER.warning(
-                    "CC fetch: unexpected HTTP %d for playlist object %s — %s",
-                    resp.status,
-                    media_content_id,
-                    body[:300],
-                )
-                return []
-            raw = await resp.read()
-    except Exception:
-        _LOGGER.warning(
-            "CC fetch: HTTP request raised exception for %s",
-            media_content_id,
-            exc_info=True,
-        )
-        return []
-
-    try:
-        data = orjson.loads(raw)
-    except Exception:
-        _LOGGER.warning(
-            "CC fetch: could not parse JSON response for %s — raw: %s",
-            media_content_id,
-            raw[:200] if raw else b"(empty)",
-            exc_info=True,
-        )
-        return []
-
-    # The playlist object has tracks embedded under data["tracks"]["items"].
-    # Spotify may also use "items" at the top level in some response shapes,
-    # so check both.
-    tracks_block = data.get("tracks") or data.get("items") or {}
-    items = tracks_block.get("items") or [] if isinstance(tracks_block, dict) else []
-
-    if not items:
-        _LOGGER.warning(
-            "CC fetch: playlist object for %s returned no embedded tracks "
-            "(HTTP 200). Response top-level keys: %s; tracks block keys: %s. "
-            "The playlist may be private, or Spotify does not embed track data "
-            "for dev-mode CC tokens.",
-            media_content_id,
-            list(data.keys()),
-            list(tracks_block.keys()) if isinstance(tracks_block, dict) else tracks_block,
-        )
-        return []
-
-    _LOGGER.warning(
-        "CC fetch: got %d embedded track rows for %s — parsing",
-        len(items),
-        media_content_id,
-    )
-    payloads: list[ItemPayload] = []
-    for row in items:
-        if not isinstance(row, dict):
-            continue
-        track = row.get("track") or row.get("item")
-        if not isinstance(track, dict) or track.get("is_local"):
-            continue
-        pl = _track_payload_from_raw_dict(track)
-        if pl:
-            payloads.append(pl)
-
-    _LOGGER.warning(
-        "CC fetch: finished for %s — returning %d/%d payloads",
-        media_content_id,
-        len(payloads),
-        len(items),
-    )
-    return payloads
 
 
 class ItemPayload(TypedDict):
@@ -753,22 +508,21 @@ async def _fetch_playlist_rows_via_api(
 async def _load_playlist_track_payloads(
     spotify: SpotifyClient,
     media_content_id: str,
-    hass: HomeAssistant | None = None,
 ) -> list[ItemPayload]:
     """Resolve playlist tracks for browsing.
 
-    Always uses the paged ``GET /playlists/{id}/items`` endpoint with a
-    tolerant per-row parser (``_playlist_api_row_to_payload``) that skips
-    null / local-file rows instead of aborting on the first bad entry.
-    A ``market`` parameter is sent so that Spotify substitutes / filters
-    region-restricted tracks rather than returning ``track: null`` rows
-    (which would otherwise be dropped and produce an empty result for
-    editorial / non-owned playlists).  Falls back to ``"US"`` when the
-    user's country cannot be determined.
+    Uses the paged ``GET /playlists/{id}/items`` endpoint with a tolerant
+    per-row parser that skips null / local-file rows.  A ``market`` parameter
+    is sent so Spotify substitutes region-restricted tracks rather than
+    returning ``track: null`` rows.
 
-    If the user-scoped token is blocked (403) or returns empty results,
-    falls back to the Client Credentials flow (app-level token) which can
-    read public playlists regardless of developer-mode quota restrictions.
+    Spotify's February 2026 API update blocks ``/items`` with 403 for
+    non-owned playlists in developer-mode apps.  The ``items`` field in the
+    full playlist object (``GET /v1/playlists/{id}``) is also restricted —
+    per Spotify's own documentation it is only present for playlists owned
+    by the authenticated user or where the user is a collaborator.  There is
+    no token type or request format that bypasses this for non-owned playlists
+    without Extended Quota Mode approval.
     """
     market = await _spotify_user_market(spotify)
     if not market:
@@ -783,26 +537,24 @@ async def _load_playlist_track_payloads(
             spotify, media_content_id, market=market
         )
     except SpotifyForbiddenError:
-        # Spotify's 2026 API changes block the /items sub-endpoint for
-        # non-owned playlists in developer-mode apps (403 Forbidden).
-        _LOGGER.warning(
-            "GET /playlists/%s/items returned 403 (SpotifyForbiddenError); "
-            "trying embedded-tracks fallback then client credentials",
+        # Non-owned playlist in developer-mode: /items is blocked (403).
+        # The full playlist object also omits the track list for non-owned
+        # playlists — this is a documented Spotify API restriction.
+        _LOGGER.debug(
+            "GET /playlists/%s/items returned 403 — non-owned playlist in "
+            "developer mode; track listing is unavailable",
             media_content_id,
         )
-        return await _fetch_tracks_embedded_in_playlist(
-            spotify, media_content_id, market=market, hass=hass
-        )
+        return []
 
     if payloads:
         return payloads
 
-    # Paged /items succeeded but returned nothing — playlist may genuinely
-    # be empty, or the API returned tracks:null.  Try spotifyaio helper then
-    # client credentials as a last resort.
-    _LOGGER.warning(
+    # /items succeeded (200) but returned no rows — try the spotifyaio
+    # helper as a second attempt (handles edge cases in the model layer).
+    _LOGGER.debug(
         "Paged /items returned no payloads for %s (market=%s); "
-        "trying spotifyaio get_playlist_items then client credentials",
+        "trying spotifyaio get_playlist_items",
         media_content_id,
         market,
     )
@@ -812,27 +564,12 @@ async def _load_playlist_track_payloads(
         if result:
             return result
     except Exception:
-        _LOGGER.warning(
+        _LOGGER.debug(
             "get_playlist_items also failed for %s",
             media_content_id,
             exc_info=True,
         )
 
-    # Both user-token paths failed — try client credentials for public playlists.
-    if hass is not None:
-        _LOGGER.warning(
-            "User-token paths exhausted for %s; trying client credentials",
-            media_content_id,
-        )
-        return await _fetch_playlist_tracks_with_client_credentials(
-            hass, media_content_id, market=market
-        )
-
-    _LOGGER.warning(
-        "No hass instance available for CC fallback — cannot load tracks "
-        "for %s",
-        media_content_id,
-    )
     return []
 
 
@@ -859,28 +596,23 @@ async def _fetch_tracks_embedded_in_playlist(
     media_content_id: str,
     *,
     market: str | None,
-    hass: HomeAssistant | None = None,
 ) -> list[ItemPayload]:
-    """Fetch tracks from ``GET /v1/playlists/{id}`` (full object, no /items sub-path).
+    """Fetch tracks embedded in ``GET /v1/playlists/{id}`` for *owned* playlists.
 
-    Spotify's 2026 API changes blocked ``/playlists/{id}/items`` (403) for
-    non-owned playlists in developer-mode apps.  We request the full playlist
-    object **without** a ``fields`` filter so Spotify's backend doesn't see an
-    explicit track-items request, which appears to trigger the same restriction
-    as the dedicated ``/items`` endpoint.
+    Spotify only returns the ``items`` field (embedded track list) for
+    playlists owned by the authenticated user or playlists the user is a
+    collaborator of.  For all other playlists this field is absent regardless
+    of token type or ``fields`` parameter.
 
-    Limited to the first page (~100 tracks) returned in the ``tracks`` field of
-    the playlist object.  The ``next`` pagination cursor points back to the
-    forbidden ``/items`` endpoint so we cannot paginate further.
+    This function is used as a secondary fallback when the primary paged
+    ``/items`` endpoint succeeds (200) but returns no rows — it can recover
+    tracks for owned playlists where the strict spotifyaio model failed.
     """
     raw_get = getattr(spotify, "_get", None)
     if raw_get is None:
         return []
     identifier = get_identifier(media_content_id)
 
-    # No ``fields`` filter — let Spotify return the full playlist object.
-    # Requesting ``fields=tracks.items(...)`` explicitly appears to trigger the
-    # same access restriction as GET /playlists/{id}/items for non-owned playlists.
     params: dict[str, Any] = {}
     if market:
         params["market"] = market
@@ -888,11 +620,8 @@ async def _fetch_tracks_embedded_in_playlist(
     try:
         raw = await raw_get(f"v1/playlists/{identifier}", params=params)
     except Exception:
-        _LOGGER.warning(
-            "Playlist full-object fetch failed for %s — Spotify may be blocking "
-            "all track access for non-owned playlists in developer-mode apps. "
-            "Getting the app approved for Extended Quota Mode is the only "
-            "permanent fix.",
+        _LOGGER.debug(
+            "Playlist full-object fetch failed for %s",
             media_content_id,
             exc_info=True,
         )
@@ -901,41 +630,37 @@ async def _fetch_tracks_embedded_in_playlist(
     try:
         data = orjson.loads(raw)
     except Exception:
-        _LOGGER.warning(
-            "Could not parse playlist response for %s", media_content_id
-        )
+        _LOGGER.debug("Could not parse playlist response for %s", media_content_id)
         return []
 
-    # Spotify renamed the embedded track block from "tracks" to "items" in their
-    # 2026 API update.  Try the new name first, fall back to the old one so this
-    # code keeps working against both old and new response shapes.
-    # IMPORTANT: per Spotify docs, this field is only present for playlists
-    # *owned by the current user or where the user is a collaborator*. For all
-    # other playlists (editorial, friends') the field is simply absent.
-    tracks_block = data.get("items") or data.get("tracks") or {}
-    items = tracks_block.get("items") or []
+    # The embedded track list lives under different keys depending on Spotify
+    # API version:  old → data["tracks"]["items"],  new → data["items"] as a
+    # flat list or paging wrapper.  Per Spotify docs this field is only
+    # present for playlists owned by or collaborated on by the current user.
+    def _extract_rows(d: dict[str, Any]) -> list[Any]:
+        for key in ("tracks", "items"):
+            block = d.get(key)
+            if block is None:
+                continue
+            if isinstance(block, list):
+                return block
+            if isinstance(block, dict):
+                inner = block.get("items")
+                if isinstance(inner, list):
+                    return inner
+        return []
 
-    if not items:
-        _LOGGER.warning(
-            "Playlist %s full-object returned no embedded track items "
-            "(block keys: %s) — Spotify only provides this field for owned/"
-            "collaborative playlists; trying client credentials for public access",
-            media_content_id,
-            list(tracks_block.keys()) if isinstance(tracks_block, dict) else tracks_block,
-        )
-        if hass is not None:
-            return await _fetch_playlist_tracks_with_client_credentials(
-                hass, media_content_id, market=market
-            )
-        _LOGGER.warning(
-            "No hass available for CC fallback after embedded-tracks returned "
-            "nothing for %s",
+    rows = _extract_rows(data)
+    if not rows:
+        _LOGGER.debug(
+            "Playlist %s full-object has no embedded track items "
+            "(expected for non-owned playlists)",
             media_content_id,
         )
         return []
 
     payloads: list[ItemPayload] = []
-    for row in items:
+    for row in rows:
         if not isinstance(row, dict):
             continue
         # "item" is the current non-deprecated field; "track" is the legacy alias.
@@ -950,7 +675,7 @@ async def _fetch_tracks_embedded_in_playlist(
         "Embedded-tracks fallback for %s: %d/%d rows produced payloads",
         identifier,
         len(payloads),
-        len(items),
+        len(rows),
     )
     return payloads
 
@@ -1002,26 +727,13 @@ async def _fetch_playlist_metadata(
 async def _browse_playlist_tracks(
     spotify: SpotifyClient,
     media_content_id: str,
-    hass: HomeAssistant | None = None,
 ) -> tuple[str | None, str | None, list[ItemPayload]]:
-    """Resolve playlist title, artwork, and track list.
-
-    Metadata (name + artwork) comes from a lightweight
-    ``fields=name,images`` request that never touches the track model, so it
-    works for both owned and non-owned playlists regardless of the spotifyaio
-    model version.  Tracks are fetched separately via the paged
-    ``/items`` endpoint with a tolerant per-row parser.
-    """
-    # Fetch user ID once; share it between metadata (for owner attribution)
-    # and track loading (for market resolution — both call /me internally,
-    # but the OS TCP stack will likely serve the second from cache).
+    """Resolve playlist title, artwork, and track list."""
     current_user_id = await _get_current_user_id(spotify)
     title, image = await _fetch_playlist_metadata(
         spotify, media_content_id, current_user_id=current_user_id
     )
-    payloads = await _load_playlist_track_payloads(
-        spotify, media_content_id, hass=hass
-    )
+    payloads = await _load_playlist_track_payloads(spotify, media_content_id)
     return title, image, payloads
 
 
@@ -1236,7 +948,7 @@ async def build_item_response(  # noqa: C901
             items = [_get_track_item_payload(track) for track in top_tracks]
     elif media_content_type == MediaType.PLAYLIST:
         title, image, items = await _browse_playlist_tracks(
-            spotify, media_content_id, hass=hass
+            spotify, media_content_id
         )
         if title is None and items:
             title = "Playlist"
@@ -1333,6 +1045,32 @@ async def build_item_response(  # noqa: C901
             )
         except (MissingMediaInformation, UnknownMediaType):
             continue
+
+    # When Spotify's developer-mode restrictions prevent us from listing tracks
+    # for a non-owned playlist (user-token 403, CC-token tracks field absent),
+    # replace the confusing HA-generated "No items" with an informative
+    # placeholder.  The placeholder is playable so the user can still start the
+    # whole playlist from here without going back to the playlist list.
+    if (
+        media_content_type == MediaType.PLAYLIST
+        and not browse_media.children
+        and title is not None
+    ):
+        browse_media.children.append(
+            BrowseMedia(
+                title=(
+                    "Track listing unavailable — Spotify restricts "
+                    "individual track access for non-owned playlists in "
+                    "developer mode.  Press ▶ to play the full playlist."
+                ),
+                media_class=MediaClass.PLAYLIST,
+                media_content_id=media_content_id,
+                media_content_type=f"{MEDIA_PLAYER_PREFIX}{MediaType.PLAYLIST}",
+                can_play=True,
+                can_expand=False,
+                thumbnail=image,
+            )
+        )
 
     return browse_media
 
