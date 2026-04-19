@@ -71,6 +71,14 @@ const COVER_OPTIONS = [
     { value: "center", label: "Center" },
     { value: "right", label: "Right" },
 ];
+const META_V_OPTIONS = [
+    { value: "top", label: "Top — beside art: align to top; centered: under cover" },
+    { value: "center", label: "Center (default)" },
+    {
+        value: "bottom",
+        label: "Bottom — beside art: align to bottom; centered: toward controls",
+    },
+];
 const TEMP_UNIT_OPTIONS = [
     { value: "auto", label: "Auto (match Home Assistant)" },
     { value: "celsius", label: "Celsius (°C)" },
@@ -115,29 +123,67 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
       color: var(--secondary-text-color);
       margin-bottom: 6px;
     }
+    .section-title {
+      font-size: 0.95rem;
+      font-weight: 600;
+      margin: 8px 0 0;
+      color: var(--primary-text-color);
+    }
+    .warn {
+      font-size: 0.85rem;
+      color: var(--warning-color, #d89614);
+      margin: 0;
+    }
   `; }
     setConfig(config) {
         this._config = { ...config };
         this.requestUpdate();
     }
     render() {
-        if (!this.hass) {
-            return b `<div class="card-config">Loading…</div>`;
-        }
+        const hassForPickers = (this.hass ?? { states: {} });
         const poll = typeof this._config.poll_interval_seconds === "number" &&
             Number.isFinite(this._config.poll_interval_seconds)
             ? String(this._config.poll_interval_seconds)
             : "5";
         const align = this._config.cover_align ?? "center";
+        const metaV = this._config.meta_vertical_align === "top" ||
+            this._config.meta_vertical_align === "bottom"
+            ? this._config.meta_vertical_align
+            : "center";
         const tempUnit = this._config.corner_temperature_unit === "celsius" ||
             this._config.corner_temperature_unit === "fahrenheit"
             ? this._config.corner_temperature_unit
             : "auto";
         const showTemp = this._config.show_corner_temperature === true;
+        const textScale = typeof this._config.text_scale_percent === "number" &&
+            Number.isFinite(this._config.text_scale_percent)
+            ? String(Math.round(this._config.text_scale_percent))
+            : "200";
+        const coverScale = typeof this._config.cover_scale_percent === "number" &&
+            Number.isFinite(this._config.cover_scale_percent)
+            ? String(Math.round(this._config.cover_scale_percent))
+            : "100";
+        const upNextScale = typeof this._config.up_next_scale_percent === "number" &&
+            Number.isFinite(this._config.up_next_scale_percent)
+            ? String(Math.round(this._config.up_next_scale_percent))
+            : "100";
+        const cornerClimateScale = typeof this._config.corner_climate_scale_percent === "number" &&
+            Number.isFinite(this._config.corner_climate_scale_percent)
+            ? String(Math.round(this._config.corner_climate_scale_percent))
+            : "100";
         return b `
       <div class="card-config">
+        ${!this.hass
+            ? b `<p class="warn">
+              Home Assistant state is not attached yet — entity lists may be empty
+              until the editor finishes loading.
+            </p>`
+            : A}
+
+        <div class="section-title">Spotify player</div>
+        <div class="field-label">Media player entity</div>
         <ha-entity-picker
-          .hass=${this.hass}
+          .hass=${hassForPickers}
           .value=${this._config.entity ?? ""}
           .label=${"Spotify media_player"}
           .includeDomains=${["media_player"]}
@@ -145,8 +191,8 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
           @value-changed=${this._entityChanged}
         ></ha-entity-picker>
         <p class="hint">
-          Pick your Spotify Connect <strong>media_player</strong>. If this list is
-          empty, wait for states to load or pick an entity ID manually.
+          Choose the Spotify Connect <strong>media_player</strong>. You can also type
+          an entity ID if it does not appear in the list.
         </p>
 
         <ha-textfield
@@ -167,6 +213,47 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
                 </option>`)}
           </select>
         </div>
+
+        <ha-textfield
+          label="Album cover size (%)"
+          type="number"
+          inputMode="numeric"
+          min="50"
+          max="300"
+          .value=${coverScale}
+          @input=${this._coverScaleChanged}
+        ></ha-textfield>
+        <p class="hint">
+          100 = default art size; larger values grow the square cover (capped by card
+          width). Same scale in tall layout (larger base art there).
+        </p>
+
+        <div>
+          <div class="field-label">Now playing text vs album art</div>
+          <select
+            class="field"
+            .value=${metaV}
+            @change=${this._metaVerticalChanged}
+          >
+            ${META_V_OPTIONS.map((o) => b `<option value=${o.value} .selected=${metaV === o.value}>
+                  ${o.label}
+                </option>`)}
+          </select>
+        </div>
+
+        <ha-textfield
+          label="Title & artist scale (%)"
+          type="number"
+          inputMode="numeric"
+          min="50"
+          max="300"
+          .value=${textScale}
+          @input=${this._textScaleChanged}
+        ></ha-textfield>
+        <p class="hint">
+          Scales the “Now playing” label, title, artist, and progress row (100 = default
+          card size, 200 ≈ double).
+        </p>
 
         <ha-textfield
           label="Refresh interval (seconds)"
@@ -197,14 +284,48 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
           ></ha-switch>
         </ha-formfield>
 
+        <ha-formfield label="Tablet mode (larger source list touch targets)">
+          <ha-switch
+            .checked=${this._config.source_tablet_mode === true}
+            @change=${this._tabletSourceChanged}
+          ></ha-switch>
+        </ha-formfield>
+
         <ha-formfield label="Show “Up next” (custom integration queue attributes)">
           <ha-switch
             .checked=${this._config.show_up_next !== false}
             @change=${this._upNextChanged}
           ></ha-switch>
         </ha-formfield>
+        <ha-textfield
+          label="“Up next” pane scale (%)"
+          type="number"
+          inputMode="numeric"
+          min="50"
+          max="300"
+          .value=${upNextScale}
+          @input=${this._upNextScaleChanged}
+        ></ha-textfield>
+        <p class="hint">
+          100 = default size for the overlay text, thumbnail, padding, and corner
+          position (50–300).
+        </p>
 
-        <div class="field-label">Top left — time &amp; temperature</div>
+        <div class="section-title">Time &amp; temperature (top-left)</div>
+        <ha-textfield
+          label="Time &amp; temperature pane scale (%)"
+          type="number"
+          inputMode="numeric"
+          min="50"
+          max="300"
+          .value=${cornerClimateScale}
+          @input=${this._cornerClimateScaleChanged}
+        ></ha-textfield>
+        <p class="hint">
+          100 = default for the clock, temperature line, padding, and glass panel
+          size (50–300).
+        </p>
+
         <ha-formfield label="Show time">
           <ha-switch
             .checked=${this._config.show_corner_time === true}
@@ -217,19 +338,19 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
             @change=${this._cornerTempEnabledChanged}
           ></ha-switch>
         </ha-formfield>
+        <div class="field-label">Temperature entity</div>
         <ha-entity-picker
-          .hass=${this.hass}
+          .hass=${hassForPickers}
           .value=${this._config.corner_temperature_entity ?? ""}
-          .label=${"Temperature entity (weather or sensor)"}
+          .label=${"Weather, sensor, or input_number"}
           .includeDomains=${["weather", "sensor", "input_number"]}
           allow-custom-entity
           .disabled=${!showTemp}
           @value-changed=${this._cornerTempEntityChanged}
         ></ha-entity-picker>
         <p class="hint">
-          Use a <strong>weather</strong> entity (uses the <code>temperature</code> attribute)
-          or a numeric <strong>sensor</strong>. Temperature unit can follow Home Assistant or
-          be forced to °C / °F below.
+          <strong>weather</strong> uses the <code>temperature</code> attribute;
+          <strong>sensor</strong> / <strong>input_number</strong> use the numeric state.
         </p>
         <div>
           <div class="field-label">Temperature display unit</div>
@@ -268,6 +389,29 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
             c.corner_temperature_unit === "fahrenheit"
             ? c.corner_temperature_unit
             : "auto";
+        const meta_vertical_align = c.meta_vertical_align === "top" || c.meta_vertical_align === "bottom"
+            ? c.meta_vertical_align
+            : "center";
+        let text_scale_percent = 200;
+        const tsp = c.text_scale_percent;
+        if (typeof tsp === "number" && Number.isFinite(tsp)) {
+            text_scale_percent = Math.min(300, Math.max(50, Math.round(tsp)));
+        }
+        let cover_scale_percent = 100;
+        const csp = c.cover_scale_percent;
+        if (typeof csp === "number" && Number.isFinite(csp)) {
+            cover_scale_percent = Math.min(300, Math.max(50, Math.round(csp)));
+        }
+        let up_next_scale_percent = 100;
+        const unsp = c.up_next_scale_percent;
+        if (typeof unsp === "number" && Number.isFinite(unsp)) {
+            up_next_scale_percent = Math.min(300, Math.max(50, Math.round(unsp)));
+        }
+        let corner_climate_scale_percent = 100;
+        const ccsp = c.corner_climate_scale_percent;
+        if (typeof ccsp === "number" && Number.isFinite(ccsp)) {
+            corner_climate_scale_percent = Math.min(300, Math.max(50, Math.round(ccsp)));
+        }
         return {
             type: "custom:spotify-spotlight-card",
             entity: typeof c.entity === "string" ? c.entity : "",
@@ -280,6 +424,7 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
                 c.cover_align === "right"
                 ? c.cover_align
                 : "center",
+            cover_scale_percent,
             poll_interval_seconds,
             show_corner_time: c.show_corner_time === true,
             show_corner_temperature: c.show_corner_temperature === true,
@@ -287,6 +432,11 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
                 ? c.corner_temperature_entity.trim()
                 : undefined,
             corner_temperature_unit,
+            meta_vertical_align,
+            text_scale_percent,
+            source_tablet_mode: c.source_tablet_mode === true,
+            up_next_scale_percent,
+            corner_climate_scale_percent,
         };
     }
     _merge(partial) {
@@ -313,6 +463,31 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
             cover_align: v === "left" || v === "center" || v === "right" ? v : "center",
         });
     }
+    _coverScaleChanged(ev) {
+        const t = ev.target;
+        const n = parseInt(t.value, 10);
+        if (!Number.isFinite(n)) {
+            this._merge({ cover_scale_percent: 100 });
+            return;
+        }
+        this._merge({ cover_scale_percent: Math.min(300, Math.max(50, n)) });
+    }
+    _metaVerticalChanged(ev) {
+        const t = ev.target;
+        const v = t.value;
+        this._merge({
+            meta_vertical_align: v === "top" || v === "bottom" || v === "center" ? v : "center",
+        });
+    }
+    _textScaleChanged(ev) {
+        const t = ev.target;
+        const n = parseInt(t.value, 10);
+        if (!Number.isFinite(n)) {
+            this._merge({ text_scale_percent: 200 });
+            return;
+        }
+        this._merge({ text_scale_percent: Math.min(300, Math.max(50, n)) });
+    }
     _pollChanged(ev) {
         const t = ev.target;
         const n = parseInt(t.value, 10);
@@ -330,9 +505,31 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
         const el = ev.currentTarget;
         this._merge({ show_browse_media_button: el.checked });
     }
+    _tabletSourceChanged(ev) {
+        const el = ev.currentTarget;
+        this._merge({ source_tablet_mode: el.checked });
+    }
     _upNextChanged(ev) {
         const el = ev.currentTarget;
         this._merge({ show_up_next: el.checked });
+    }
+    _upNextScaleChanged(ev) {
+        const t = ev.target;
+        const n = parseInt(t.value, 10);
+        if (!Number.isFinite(n)) {
+            this._merge({ up_next_scale_percent: 100 });
+            return;
+        }
+        this._merge({ up_next_scale_percent: Math.min(300, Math.max(50, n)) });
+    }
+    _cornerClimateScaleChanged(ev) {
+        const t = ev.target;
+        const n = parseInt(t.value, 10);
+        if (!Number.isFinite(n)) {
+            this._merge({ corner_climate_scale_percent: 100 });
+            return;
+        }
+        this._merge({ corner_climate_scale_percent: Math.min(300, Math.max(50, n)) });
     }
     _cornerTimeChanged(ev) {
         const el = ev.currentTarget;
@@ -361,7 +558,7 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
     }
 };
 __decorate([
-    n({ attribute: false })
+    n({ attribute: false, type: Object })
 ], SpotifySpotlightCardEditor.prototype, "hass", void 0);
 __decorate([
     n({ type: Object })
@@ -388,10 +585,16 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             show_up_next: true,
             show_browse_media_button: true,
             cover_align: "center",
+            cover_scale_percent: 100,
             poll_interval_seconds: 5,
             show_corner_time: false,
             show_corner_temperature: false,
             corner_temperature_unit: "auto",
+            meta_vertical_align: "center",
+            text_scale_percent: 200,
+            source_tablet_mode: false,
+            up_next_scale_percent: 100,
+            corner_climate_scale_percent: 100,
         };
     }
     static getConfigElement() {
@@ -423,19 +626,48 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
         const corner_temperature_unit = ctu === "celsius" || ctu === "fahrenheit" || ctu === "auto" ? ctu : "auto";
         const cteRaw = raw.corner_temperature_entity;
         const corner_temperature_entity = typeof cteRaw === "string" ? cteRaw.trim() : undefined;
+        const mva = raw.meta_vertical_align;
+        const meta_vertical_align = mva === "top" || mva === "bottom" || mva === "center" ? mva : "center";
+        const tspRaw = raw.text_scale_percent;
+        let text_scale_percent = 200;
+        if (typeof tspRaw === "number" &&
+            Number.isFinite(tspRaw)) {
+            text_scale_percent = Math.min(300, Math.max(50, Math.round(tspRaw)));
+        }
+        const cspRaw = raw.cover_scale_percent;
+        let cover_scale_percent = 100;
+        if (typeof cspRaw === "number" && Number.isFinite(cspRaw)) {
+            cover_scale_percent = Math.min(300, Math.max(50, Math.round(cspRaw)));
+        }
+        const unspRaw = raw.up_next_scale_percent;
+        let up_next_scale_percent = 100;
+        if (typeof unspRaw === "number" && Number.isFinite(unspRaw)) {
+            up_next_scale_percent = Math.min(300, Math.max(50, Math.round(unspRaw)));
+        }
+        const ccspRaw = raw.corner_climate_scale_percent;
+        let corner_climate_scale_percent = 100;
+        if (typeof ccspRaw === "number" && Number.isFinite(ccspRaw)) {
+            corner_climate_scale_percent = Math.min(300, Math.max(50, Math.round(ccspRaw)));
+        }
         this.config = {
             type: "custom:spotify-spotlight-card",
             entity,
             tall: raw.tall !== false,
-            name: typeof raw.name === "string" ? raw.name : undefined,
+            name: typeof raw.name === "string" && raw.name.trim() ? raw.name.trim() : undefined,
             show_up_next: raw.show_up_next !== false,
             show_browse_media_button: raw.show_browse_media_button !== false,
             cover_align,
+            cover_scale_percent,
             poll_interval_seconds,
             show_corner_time: raw.show_corner_time === true,
             show_corner_temperature: raw.show_corner_temperature === true,
             corner_temperature_entity: corner_temperature_entity?.length ? corner_temperature_entity : undefined,
             corner_temperature_unit,
+            meta_vertical_align,
+            text_scale_percent,
+            source_tablet_mode: raw.source_tablet_mode === true,
+            up_next_scale_percent,
+            corner_climate_scale_percent,
         };
     }
     static { this.styles = i$3 `
@@ -449,6 +681,10 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
       --spot-muted: rgba(255, 255, 255, 0.62);
       --spot-glass: rgba(12, 12, 18, 0.38);
       --spot-glass-strong: rgba(12, 12, 18, 0.58);
+      --spot-meta-scale: 2;
+      --spot-cover-scale: 1;
+      --spot-up-next-scale: 1;
+      --spot-corner-climate-scale: 1;
       color: var(--spot-text);
       font-family: var(--ha-font-family-body, ui-sans-serif, system-ui);
       -webkit-font-smoothing: antialiased;
@@ -561,31 +797,38 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
     /** Pinned inside .wrap — does not participate in meta/center layout. */
     .up-next {
       position: absolute;
-      top: 16px;
-      right: 16px;
+      top: calc(16px * var(--spot-up-next-scale, 1));
+      right: calc(16px * var(--spot-up-next-scale, 1));
       left: auto;
       bottom: auto;
       display: flex;
       align-items: center;
-      gap: 12px;
-      padding: 10px 14px 10px 10px;
+      gap: calc(12px * var(--spot-up-next-scale, 1));
+      padding: calc(10px * var(--spot-up-next-scale, 1))
+        calc(14px * var(--spot-up-next-scale, 1))
+        calc(10px * var(--spot-up-next-scale, 1))
+        calc(10px * var(--spot-up-next-scale, 1));
       margin: 0;
-      max-width: min(300px, calc(100% - 48px));
+      max-width: min(
+        calc(300px * var(--spot-up-next-scale, 1)),
+        calc(100% - 32px)
+      );
       box-sizing: border-box;
       z-index: 8;
       background: var(--spot-glass-strong);
       backdrop-filter: blur(22px);
       -webkit-backdrop-filter: blur(22px);
-      border-radius: 16px;
+      border-radius: calc(16px * min(var(--spot-up-next-scale, 1), 1.35));
       border: 1px solid rgba(255, 255, 255, 0.14);
-      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+      box-shadow: 0 calc(8px * var(--spot-up-next-scale, 1))
+        calc(28px * var(--spot-up-next-scale, 1)) rgba(0, 0, 0, 0.35);
       text-align: left;
     }
 
     .up-next-cover {
-      width: 56px;
-      height: 56px;
-      border-radius: 10px;
+      width: calc(56px * var(--spot-up-next-scale, 1));
+      height: calc(56px * var(--spot-up-next-scale, 1));
+      border-radius: calc(10px * min(var(--spot-up-next-scale, 1), 1.35));
       object-fit: cover;
       flex-shrink: 0;
       box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
@@ -598,16 +841,16 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
     }
 
     .up-next-label {
-      font-size: 0.68rem;
+      font-size: calc(0.68rem * var(--spot-up-next-scale, 1));
       letter-spacing: 0.12em;
       text-transform: uppercase;
       color: var(--spot-muted);
-      margin: 0 0 4px;
+      margin: 0 0 calc(4px * var(--spot-up-next-scale, 1));
     }
 
     .up-next-title {
       margin: 0;
-      font-size: 0.95rem;
+      font-size: calc(0.95rem * var(--spot-up-next-scale, 1));
       font-weight: 600;
       line-height: 1.25;
       overflow: hidden;
@@ -617,8 +860,8 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
     }
 
     .up-next-artist {
-      margin: 4px 0 0;
-      font-size: 0.82rem;
+      margin: calc(4px * var(--spot-up-next-scale, 1)) 0 0;
+      font-size: calc(0.82rem * var(--spot-up-next-scale, 1));
       color: var(--spot-muted);
       overflow: hidden;
       text-overflow: ellipsis;
@@ -627,25 +870,30 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
 
     .corner-climate {
       position: absolute;
-      top: 16px;
-      left: 16px;
+      top: calc(16px * var(--spot-corner-climate-scale, 1));
+      left: calc(16px * var(--spot-corner-climate-scale, 1));
       z-index: 8;
-      max-width: min(220px, calc(100% - 40px));
+      max-width: min(
+        calc(220px * var(--spot-corner-climate-scale, 1)),
+        calc(100% - 32px)
+      );
       box-sizing: border-box;
-      padding: 10px 14px;
+      padding: calc(10px * var(--spot-corner-climate-scale, 1))
+        calc(14px * var(--spot-corner-climate-scale, 1));
       background: var(--spot-glass-strong);
       backdrop-filter: blur(22px);
       -webkit-backdrop-filter: blur(22px);
-      border-radius: 16px;
+      border-radius: calc(16px * min(var(--spot-corner-climate-scale, 1), 1.35));
       border: 1px solid rgba(255, 255, 255, 0.14);
-      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+      box-shadow: 0 calc(8px * var(--spot-corner-climate-scale, 1))
+        calc(28px * var(--spot-corner-climate-scale, 1)) rgba(0, 0, 0, 0.35);
       text-align: left;
       pointer-events: none;
     }
 
     .corner-time {
       margin: 0;
-      font-size: 1.25rem;
+      font-size: calc(1.25rem * var(--spot-corner-climate-scale, 1));
       font-weight: 650;
       line-height: 1.2;
       letter-spacing: 0.02em;
@@ -654,8 +902,8 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
     }
 
     .corner-temp {
-      margin: 4px 0 0;
-      font-size: 0.95rem;
+      margin: calc(4px * var(--spot-corner-climate-scale, 1)) 0 0;
+      font-size: calc(0.95rem * var(--spot-corner-climate-scale, 1));
       font-weight: 550;
       color: var(--spot-muted);
       text-shadow: 0 1px 10px rgba(0, 0, 0, 0.4);
@@ -672,16 +920,68 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
       flex-wrap: wrap;
     }
 
-    .top.cover-left {
+    .top.cover-left,
+    .top.cover-right {
       flex-direction: row;
       justify-content: flex-start;
-      align-items: flex-end;
+      align-items: stretch;
+    }
+
+    .top.cover-right {
+      flex-direction: row-reverse;
+    }
+
+    .top.cover-left .meta-region,
+    .top.cover-right .meta-region {
+      flex: 1 1 200px;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    .top.cover-left.meta-v-top .meta-region,
+    .top.cover-right.meta-v-top .meta-region {
+      justify-content: flex-start;
+    }
+
+    .top.cover-left.meta-v-center .meta-region,
+    .top.cover-right.meta-v-center .meta-region {
+      justify-content: center;
+    }
+
+    .top.cover-left.meta-v-bottom .meta-region,
+    .top.cover-right.meta-v-bottom .meta-region {
+      justify-content: flex-end;
     }
 
     .top.cover-center {
       flex-direction: column;
       align-items: center;
       text-align: center;
+    }
+
+    .top.cover-center .meta-region {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      box-sizing: border-box;
+      justify-content: flex-start;
+    }
+
+    .top.cover-center.meta-v-top .meta-region {
+      justify-content: flex-start;
+      margin-top: 0;
+    }
+
+    .top.cover-center.meta-v-center .meta-region {
+      justify-content: center;
+      margin-top: 0;
+    }
+
+    .top.cover-center.meta-v-bottom .meta-region {
+      justify-content: flex-end;
+      margin-top: auto;
     }
 
     .top.cover-center .meta {
@@ -700,14 +1000,16 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
       min-height: 0;
     }
 
-    :host([data-tall]) .top.cover-left,
-    :host([data-tall]) .top.cover-right {
-      align-items: flex-start;
-    }
-
     :host([data-tall]) .top.cover-center {
+      flex: 1 1 auto;
+      min-height: 0;
       justify-content: flex-start;
       align-items: center;
+    }
+
+    :host([data-tall]) .top.cover-center .meta-region {
+      flex: 1 1 auto;
+      min-height: 0;
     }
 
     :host([data-tall]) .top.cover-center .progress-wrap {
@@ -715,23 +1017,19 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
     }
 
     :host([data-tall]) .art {
-      width: min(340px, 86vw);
+      width: min(
+        calc(340px * var(--spot-cover-scale, 1)),
+        calc(86vw * var(--spot-cover-scale, 1))
+      );
       max-width: 100%;
-    }
-
-    :host([data-tall]) .meta {
-      justify-content: flex-start;
-    }
-
-    .top.cover-right {
-      flex-direction: row-reverse;
-      justify-content: flex-start;
-      align-items: flex-end;
     }
 
     .art {
       flex: 0 0 auto;
-      width: min(240px, 42vw);
+      width: min(
+        calc(240px * var(--spot-cover-scale, 1)),
+        calc(42vw * var(--spot-cover-scale, 1))
+      );
       aspect-ratio: 1;
       border-radius: 16px;
       overflow: hidden;
@@ -747,16 +1045,20 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
     }
 
     .meta {
-      flex: 1 1 200px;
       display: flex;
       flex-direction: column;
-      justify-content: flex-end;
-      gap: 8px;
+      justify-content: flex-start;
+      gap: calc(8px * min(var(--spot-meta-scale, 2), 2.5));
       min-width: 0;
     }
 
+    .top.cover-left .meta,
+    .top.cover-right .meta {
+      flex: 0 0 auto;
+    }
+
     .label {
-      font-size: 0.78rem;
+      font-size: calc(0.78rem * var(--spot-meta-scale, 2));
       letter-spacing: 0.08em;
       text-transform: uppercase;
       color: var(--spot-muted);
@@ -765,7 +1067,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
     h2 {
       margin: 0;
       font-weight: 650;
-      font-size: clamp(1.35rem, 3vw, 1.85rem);
+      font-size: calc(clamp(1.35rem, 3vw, 1.85rem) * var(--spot-meta-scale, 2));
       line-height: 1.15;
       text-shadow: 0 2px 24px rgba(0, 0, 0, 0.55);
       word-break: break-word;
@@ -773,18 +1075,18 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
 
     .artist {
       margin: 0;
-      font-size: 1.05rem;
+      font-size: calc(1.05rem * var(--spot-meta-scale, 2));
       color: var(--spot-muted);
       font-weight: 450;
     }
 
     .progress-wrap {
-      margin-top: 8px;
+      margin-top: calc(8px * min(var(--spot-meta-scale, 2), 2.5));
     }
 
     .progress-bar {
       display: block;
-      height: 4px;
+      height: calc(4px * var(--spot-meta-scale, 2));
       border-radius: 4px;
       background: rgba(255, 255, 255, 0.14);
       overflow: hidden;
@@ -800,9 +1102,23 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
     .time-row {
       display: flex;
       justify-content: space-between;
-      font-size: 0.75rem;
+      font-size: calc(0.75rem * var(--spot-meta-scale, 2));
       color: var(--spot-muted);
       margin-top: 6px;
+    }
+
+    .source-tablet select.source-select {
+      min-height: 52px;
+      font-size: 1.2rem;
+      padding: 16px 14px;
+      line-height: 1.4;
+    }
+
+    .source-tablet select.source-select option {
+      font-size: 1.15rem;
+      padding: 14px 10px;
+      min-height: 3.25rem;
+      line-height: 1.5;
     }
 
     .glass-panel {
@@ -976,11 +1292,15 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
         }
         try {
             window.history.pushState(null, "", pathForHistory);
-            window.dispatchEvent(new CustomEvent("location-changed", {
+            const ev = new CustomEvent("location-changed", {
                 bubbles: true,
                 composed: true,
                 detail: { replace: false },
-            }));
+            });
+            // Defer so the history entry is committed before HA’s router handles the event.
+            queueMicrotask(() => {
+                window.dispatchEvent(ev);
+            });
         }
         catch {
             window.location.assign(this.hass?.hassUrl?.(path) ??
@@ -1008,6 +1328,33 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
                 this._startTimers();
             }
         }
+        this._syncLayoutCssVars();
+    }
+    _syncLayoutCssVars() {
+        const p = this.config?.text_scale_percent;
+        let metaScale = 2;
+        if (typeof p === "number" && Number.isFinite(p)) {
+            metaScale = Math.min(3, Math.max(0.5, p / 100));
+        }
+        this.style.setProperty("--spot-meta-scale", String(metaScale));
+        const c = this.config?.cover_scale_percent;
+        let coverScale = 1;
+        if (typeof c === "number" && Number.isFinite(c)) {
+            coverScale = Math.min(3, Math.max(0.5, c / 100));
+        }
+        this.style.setProperty("--spot-cover-scale", String(coverScale));
+        const u = this.config?.up_next_scale_percent;
+        let upNextScale = 1;
+        if (typeof u === "number" && Number.isFinite(u)) {
+            upNextScale = Math.min(3, Math.max(0.5, u / 100));
+        }
+        this.style.setProperty("--spot-up-next-scale", String(upNextScale));
+        const cc = this.config?.corner_climate_scale_percent;
+        let cornerScale = 1;
+        if (typeof cc === "number" && Number.isFinite(cc)) {
+            cornerScale = Math.min(3, Math.max(0.5, cc / 100));
+        }
+        this.style.setProperty("--spot-corner-climate-scale", String(cornerScale));
     }
     _stopTimers() {
         if (this._tickTimer !== undefined) {
@@ -1201,6 +1548,10 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             : align === "right"
                 ? "cover-right"
                 : "cover-center";
+        const metaV = this.config.meta_vertical_align === "top" ||
+            this.config.meta_vertical_align === "bottom"
+            ? this.config.meta_vertical_align
+            : "center";
         const showUpNext = this.config.show_up_next !== false;
         const nextTitle = String(a.media_next_title ?? "").trim() || "";
         const nextArtist = String(a.media_next_artist ?? "").trim() || "";
@@ -1236,7 +1587,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
               `
             : A}
           <div class="body">
-            <div class="top ${coverClass}">
+            <div class="top ${coverClass} meta-v-${metaV}">
               <div class="art">
                 ${pic
             ? b `<img src=${pic} alt="" />`
@@ -1246,28 +1597,30 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
                       ♪
                     </div>`}
               </div>
-              <div class="meta">
-                ${this.config.name
+              <div class="meta-region">
+                <div class="meta">
+                  ${this.config.name
             ? b `<span class="label">${this.config.name}</span>`
             : b `<span class="label">Now playing</span>`}
-                <h2>${title}</h2>
-                ${artist ? b `<p class="artist">${artist}</p>` : A}
-                ${dur > 0
+                  <h2>${title}</h2>
+                  ${artist ? b `<p class="artist">${artist}</p>` : A}
+                  ${dur > 0
             ? b `
-                      <div class="progress-wrap">
-                        <div class="progress-bar">
-                          <div
-                            class="progress-fill"
-                            style="width:${pct}%"
-                          ></div>
+                        <div class="progress-wrap">
+                          <div class="progress-bar">
+                            <div
+                              class="progress-fill"
+                              style="width:${pct}%"
+                            ></div>
+                          </div>
+                          <div class="time-row">
+                            <span>${this._fmtTime(pos)}</span>
+                            <span>${this._fmtTime(dur)}</span>
+                          </div>
                         </div>
-                        <div class="time-row">
-                          <span>${this._fmtTime(pos)}</span>
-                          <span>${this._fmtTime(dur)}</span>
-                        </div>
-                      </div>
-                    `
+                      `
             : A}
+                </div>
               </div>
             </div>
 
@@ -1374,7 +1727,11 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             </button>
           </div>
 
-          <div class="glass-panel">
+          <div
+            class="glass-panel ${this.config.source_tablet_mode === true
+            ? "source-tablet"
+            : ""}"
+          >
             <div class="source-row">
               <div>
                 <label>Source</label>

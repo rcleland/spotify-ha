@@ -1,24 +1,42 @@
 /**
  * Lovelace visual editor — entity picker and card options.
  */
-import { css, html, LitElement, type CSSResultGroup, type TemplateResult } from "lit";
+import {
+  css,
+  html,
+  LitElement,
+  nothing,
+  type CSSResultGroup,
+  type TemplateResult,
+} from "lit";
 import { customElement, property } from "lit/decorators.js";
 
 import type {
   CornerTemperatureUnit,
   CoverAlign,
+  MetaVerticalAlign,
   SpotifySpotlightCardConfig,
 } from "./spotify-config";
 
-/** Minimal `hass` shape for `ha-entity-picker`. */
+/** Minimal `hass` shape for `ha-entity-picker` — HA passes the full object. */
 export interface HomeAssistantStub {
   states: Record<string, unknown>;
+  [key: string]: unknown;
 }
 
 const COVER_OPTIONS: { value: CoverAlign; label: string }[] = [
   { value: "left", label: "Left" },
   { value: "center", label: "Center" },
   { value: "right", label: "Right" },
+];
+
+const META_V_OPTIONS: { value: MetaVerticalAlign; label: string }[] = [
+  { value: "top", label: "Top — beside art: align to top; centered: under cover" },
+  { value: "center", label: "Center (default)" },
+  {
+    value: "bottom",
+    label: "Bottom — beside art: align to bottom; centered: toward controls",
+  },
 ];
 
 const TEMP_UNIT_OPTIONS: { value: CornerTemperatureUnit; label: string }[] = [
@@ -29,7 +47,11 @@ const TEMP_UNIT_OPTIONS: { value: CornerTemperatureUnit; label: string }[] = [
 
 @customElement("spotify-spotlight-card-editor")
 export class SpotifySpotlightCardEditor extends LitElement {
-  @property({ attribute: false }) public hass?: HomeAssistantStub;
+  /**
+   * Must use `type: Object` so Lovelace’s `configElement.hass = hass` assigns the
+   * full Home Assistant object; without it, pickers often stay empty.
+   */
+  @property({ attribute: false, type: Object }) public hass?: HomeAssistantStub;
 
   @property({ type: Object }) private _config: Partial<SpotifySpotlightCardConfig> = {};
 
@@ -67,6 +89,17 @@ export class SpotifySpotlightCardEditor extends LitElement {
       color: var(--secondary-text-color);
       margin-bottom: 6px;
     }
+    .section-title {
+      font-size: 0.95rem;
+      font-weight: 600;
+      margin: 8px 0 0;
+      color: var(--primary-text-color);
+    }
+    .warn {
+      font-size: 0.85rem;
+      color: var(--warning-color, #d89614);
+      margin: 0;
+    }
   `;
 
   setConfig(config: SpotifySpotlightCardConfig): void {
@@ -75,9 +108,7 @@ export class SpotifySpotlightCardEditor extends LitElement {
   }
 
   protected render(): TemplateResult {
-    if (!this.hass) {
-      return html`<div class="card-config">Loading…</div>`;
-    }
+    const hassForPickers = (this.hass ?? { states: {} }) as HomeAssistantStub;
 
     const poll =
       typeof this._config.poll_interval_seconds === "number" &&
@@ -86,6 +117,12 @@ export class SpotifySpotlightCardEditor extends LitElement {
         : "5";
 
     const align: CoverAlign = this._config.cover_align ?? "center";
+    const metaV: MetaVerticalAlign =
+      this._config.meta_vertical_align === "top" ||
+      this._config.meta_vertical_align === "bottom"
+        ? this._config.meta_vertical_align
+        : "center";
+
     const tempUnit: CornerTemperatureUnit =
       this._config.corner_temperature_unit === "celsius" ||
       this._config.corner_temperature_unit === "fahrenheit"
@@ -93,10 +130,43 @@ export class SpotifySpotlightCardEditor extends LitElement {
         : "auto";
     const showTemp = this._config.show_corner_temperature === true;
 
+    const textScale =
+      typeof this._config.text_scale_percent === "number" &&
+      Number.isFinite(this._config.text_scale_percent)
+        ? String(Math.round(this._config.text_scale_percent))
+        : "200";
+
+    const coverScale =
+      typeof this._config.cover_scale_percent === "number" &&
+      Number.isFinite(this._config.cover_scale_percent)
+        ? String(Math.round(this._config.cover_scale_percent))
+        : "100";
+
+    const upNextScale =
+      typeof this._config.up_next_scale_percent === "number" &&
+      Number.isFinite(this._config.up_next_scale_percent)
+        ? String(Math.round(this._config.up_next_scale_percent))
+        : "100";
+
+    const cornerClimateScale =
+      typeof this._config.corner_climate_scale_percent === "number" &&
+      Number.isFinite(this._config.corner_climate_scale_percent)
+        ? String(Math.round(this._config.corner_climate_scale_percent))
+        : "100";
+
     return html`
       <div class="card-config">
+        ${!this.hass
+          ? html`<p class="warn">
+              Home Assistant state is not attached yet — entity lists may be empty
+              until the editor finishes loading.
+            </p>`
+          : nothing}
+
+        <div class="section-title">Spotify player</div>
+        <div class="field-label">Media player entity</div>
         <ha-entity-picker
-          .hass=${this.hass}
+          .hass=${hassForPickers as never}
           .value=${this._config.entity ?? ""}
           .label=${"Spotify media_player"}
           .includeDomains=${["media_player"]}
@@ -104,8 +174,8 @@ export class SpotifySpotlightCardEditor extends LitElement {
           @value-changed=${this._entityChanged}
         ></ha-entity-picker>
         <p class="hint">
-          Pick your Spotify Connect <strong>media_player</strong>. If this list is
-          empty, wait for states to load or pick an entity ID manually.
+          Choose the Spotify Connect <strong>media_player</strong>. You can also type
+          an entity ID if it does not appear in the list.
         </p>
 
         <ha-textfield
@@ -129,6 +199,50 @@ export class SpotifySpotlightCardEditor extends LitElement {
             )}
           </select>
         </div>
+
+        <ha-textfield
+          label="Album cover size (%)"
+          type="number"
+          inputMode="numeric"
+          min="50"
+          max="300"
+          .value=${coverScale}
+          @input=${this._coverScaleChanged}
+        ></ha-textfield>
+        <p class="hint">
+          100 = default art size; larger values grow the square cover (capped by card
+          width). Same scale in tall layout (larger base art there).
+        </p>
+
+        <div>
+          <div class="field-label">Now playing text vs album art</div>
+          <select
+            class="field"
+            .value=${metaV}
+            @change=${this._metaVerticalChanged}
+          >
+            ${META_V_OPTIONS.map(
+              (o) =>
+                html`<option value=${o.value} .selected=${metaV === o.value}>
+                  ${o.label}
+                </option>`,
+            )}
+          </select>
+        </div>
+
+        <ha-textfield
+          label="Title & artist scale (%)"
+          type="number"
+          inputMode="numeric"
+          min="50"
+          max="300"
+          .value=${textScale}
+          @input=${this._textScaleChanged}
+        ></ha-textfield>
+        <p class="hint">
+          Scales the “Now playing” label, title, artist, and progress row (100 = default
+          card size, 200 ≈ double).
+        </p>
 
         <ha-textfield
           label="Refresh interval (seconds)"
@@ -159,14 +273,48 @@ export class SpotifySpotlightCardEditor extends LitElement {
           ></ha-switch>
         </ha-formfield>
 
+        <ha-formfield label="Tablet mode (larger source list touch targets)">
+          <ha-switch
+            .checked=${this._config.source_tablet_mode === true}
+            @change=${this._tabletSourceChanged}
+          ></ha-switch>
+        </ha-formfield>
+
         <ha-formfield label="Show “Up next” (custom integration queue attributes)">
           <ha-switch
             .checked=${this._config.show_up_next !== false}
             @change=${this._upNextChanged}
           ></ha-switch>
         </ha-formfield>
+        <ha-textfield
+          label="“Up next” pane scale (%)"
+          type="number"
+          inputMode="numeric"
+          min="50"
+          max="300"
+          .value=${upNextScale}
+          @input=${this._upNextScaleChanged}
+        ></ha-textfield>
+        <p class="hint">
+          100 = default size for the overlay text, thumbnail, padding, and corner
+          position (50–300).
+        </p>
 
-        <div class="field-label">Top left — time &amp; temperature</div>
+        <div class="section-title">Time &amp; temperature (top-left)</div>
+        <ha-textfield
+          label="Time &amp; temperature pane scale (%)"
+          type="number"
+          inputMode="numeric"
+          min="50"
+          max="300"
+          .value=${cornerClimateScale}
+          @input=${this._cornerClimateScaleChanged}
+        ></ha-textfield>
+        <p class="hint">
+          100 = default for the clock, temperature line, padding, and glass panel
+          size (50–300).
+        </p>
+
         <ha-formfield label="Show time">
           <ha-switch
             .checked=${this._config.show_corner_time === true}
@@ -179,19 +327,19 @@ export class SpotifySpotlightCardEditor extends LitElement {
             @change=${this._cornerTempEnabledChanged}
           ></ha-switch>
         </ha-formfield>
+        <div class="field-label">Temperature entity</div>
         <ha-entity-picker
-          .hass=${this.hass}
+          .hass=${hassForPickers as never}
           .value=${this._config.corner_temperature_entity ?? ""}
-          .label=${"Temperature entity (weather or sensor)"}
+          .label=${"Weather, sensor, or input_number"}
           .includeDomains=${["weather", "sensor", "input_number"]}
           allow-custom-entity
           .disabled=${!showTemp}
           @value-changed=${this._cornerTempEntityChanged}
         ></ha-entity-picker>
         <p class="hint">
-          Use a <strong>weather</strong> entity (uses the <code>temperature</code> attribute)
-          or a numeric <strong>sensor</strong>. Temperature unit can follow Home Assistant or
-          be forced to °C / °F below.
+          <strong>weather</strong> uses the <code>temperature</code> attribute;
+          <strong>sensor</strong> / <strong>input_number</strong> use the numeric state.
         </p>
         <div>
           <div class="field-label">Temperature display unit</div>
@@ -242,6 +390,35 @@ export class SpotifySpotlightCardEditor extends LitElement {
         ? c.corner_temperature_unit
         : "auto";
 
+    const meta_vertical_align: MetaVerticalAlign =
+      c.meta_vertical_align === "top" || c.meta_vertical_align === "bottom"
+        ? c.meta_vertical_align
+        : "center";
+
+    let text_scale_percent = 200;
+    const tsp = c.text_scale_percent;
+    if (typeof tsp === "number" && Number.isFinite(tsp)) {
+      text_scale_percent = Math.min(300, Math.max(50, Math.round(tsp)));
+    }
+
+    let cover_scale_percent = 100;
+    const csp = c.cover_scale_percent;
+    if (typeof csp === "number" && Number.isFinite(csp)) {
+      cover_scale_percent = Math.min(300, Math.max(50, Math.round(csp)));
+    }
+
+    let up_next_scale_percent = 100;
+    const unsp = c.up_next_scale_percent;
+    if (typeof unsp === "number" && Number.isFinite(unsp)) {
+      up_next_scale_percent = Math.min(300, Math.max(50, Math.round(unsp)));
+    }
+
+    let corner_climate_scale_percent = 100;
+    const ccsp = c.corner_climate_scale_percent;
+    if (typeof ccsp === "number" && Number.isFinite(ccsp)) {
+      corner_climate_scale_percent = Math.min(300, Math.max(50, Math.round(ccsp)));
+    }
+
     return {
       type: "custom:spotify-spotlight-card",
       entity: typeof c.entity === "string" ? c.entity : "",
@@ -255,6 +432,7 @@ export class SpotifySpotlightCardEditor extends LitElement {
         c.cover_align === "right"
           ? c.cover_align
           : "center",
+      cover_scale_percent,
       poll_interval_seconds,
       show_corner_time: c.show_corner_time === true,
       show_corner_temperature: c.show_corner_temperature === true,
@@ -263,6 +441,11 @@ export class SpotifySpotlightCardEditor extends LitElement {
           ? c.corner_temperature_entity.trim()
           : undefined,
       corner_temperature_unit,
+      meta_vertical_align,
+      text_scale_percent,
+      source_tablet_mode: c.source_tablet_mode === true,
+      up_next_scale_percent,
+      corner_climate_scale_percent,
     };
   }
 
@@ -295,6 +478,35 @@ export class SpotifySpotlightCardEditor extends LitElement {
     });
   }
 
+  private _coverScaleChanged(ev: Event): void {
+    const t = ev.target as unknown as HTMLInputElement;
+    const n = parseInt(t.value, 10);
+    if (!Number.isFinite(n)) {
+      this._merge({ cover_scale_percent: 100 });
+      return;
+    }
+    this._merge({ cover_scale_percent: Math.min(300, Math.max(50, n)) });
+  }
+
+  private _metaVerticalChanged(ev: Event): void {
+    const t = ev.target as unknown as HTMLSelectElement;
+    const v = t.value as MetaVerticalAlign;
+    this._merge({
+      meta_vertical_align:
+        v === "top" || v === "bottom" || v === "center" ? v : "center",
+    });
+  }
+
+  private _textScaleChanged(ev: Event): void {
+    const t = ev.target as unknown as HTMLInputElement;
+    const n = parseInt(t.value, 10);
+    if (!Number.isFinite(n)) {
+      this._merge({ text_scale_percent: 200 });
+      return;
+    }
+    this._merge({ text_scale_percent: Math.min(300, Math.max(50, n)) });
+  }
+
   private _pollChanged(ev: Event): void {
     const t = ev.target as unknown as HTMLInputElement;
     const n = parseInt(t.value, 10);
@@ -315,9 +527,34 @@ export class SpotifySpotlightCardEditor extends LitElement {
     this._merge({ show_browse_media_button: el.checked });
   }
 
+  private _tabletSourceChanged(ev: Event): void {
+    const el = ev.currentTarget as HTMLElement & { checked: boolean };
+    this._merge({ source_tablet_mode: el.checked });
+  }
+
   private _upNextChanged(ev: Event): void {
     const el = ev.currentTarget as HTMLElement & { checked: boolean };
     this._merge({ show_up_next: el.checked });
+  }
+
+  private _upNextScaleChanged(ev: Event): void {
+    const t = ev.target as unknown as HTMLInputElement;
+    const n = parseInt(t.value, 10);
+    if (!Number.isFinite(n)) {
+      this._merge({ up_next_scale_percent: 100 });
+      return;
+    }
+    this._merge({ up_next_scale_percent: Math.min(300, Math.max(50, n)) });
+  }
+
+  private _cornerClimateScaleChanged(ev: Event): void {
+    const t = ev.target as unknown as HTMLInputElement;
+    const n = parseInt(t.value, 10);
+    if (!Number.isFinite(n)) {
+      this._merge({ corner_climate_scale_percent: 100 });
+      return;
+    }
+    this._merge({ corner_climate_scale_percent: Math.min(300, Math.max(50, n)) });
   }
 
   private _cornerTimeChanged(ev: Event): void {

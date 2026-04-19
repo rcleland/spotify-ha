@@ -10,5 +10,5 @@
   "issue_tracker": "https://github.com/rcleland/spotify-ha/issues",
   "loggers": ["spotifyaio"],
   "requirements": ["spotifyaio==2.0.2"],
-  "version": "1.2.11"
+  "version": "1.2.14"
 }
