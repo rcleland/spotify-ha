@@ -564,12 +564,15 @@ def _episode_payload_from_raw_dict(episode: dict[str, Any]) -> ItemPayload | Non
 
 
 def _playlist_api_row_to_payload(row: dict[str, Any]) -> ItemPayload | None:
-    """Parse one playlist-items row; fall back to loose dict mapping when models fail."""
+    """Parse one playlist-items row; fall back to loose dict mapping when models fail.
+
+    The Spotify API uses "item" as the primary field (non-deprecated) and "track"
+    as the legacy alias.  Prefer "item"; fall back to "track" for older responses.
+    """
     if row.get("is_local"):
         return None
-    track = row.get("track")
-    if track is None and "item" in row:
-        track = row["item"]
+    # "item" is the current non-deprecated field; "track" is the deprecated alias.
+    track = row.get("item") or row.get("track")
     if track is None:
         _LOGGER.debug("Playlist row skipped: track is null (region-restricted or removed)")
         return None
@@ -838,14 +841,20 @@ async def _fetch_tracks_embedded_in_playlist(
         )
         return []
 
-    tracks_block = data.get("tracks") or {}
+    # Spotify renamed the embedded track block from "tracks" to "items" in their
+    # 2026 API update.  Try the new name first, fall back to the old one so this
+    # code keeps working against both old and new response shapes.
+    # IMPORTANT: per Spotify docs, this field is only present for playlists
+    # *owned by the current user or where the user is a collaborator*. For all
+    # other playlists (editorial, friends') the field is simply absent.
+    tracks_block = data.get("items") or data.get("tracks") or {}
     items = tracks_block.get("items") or []
 
     if not items:
         _LOGGER.debug(
             "Playlist %s full-object returned no embedded track items "
-            "(tracks block: %s) — Spotify is stripping track data for "
-            "non-owned playlists; will try client credentials",
+            "(block: %s) — Spotify only provides this field for owned/"
+            "collaborative playlists; trying client credentials for public access",
             media_content_id,
             str(tracks_block)[:200],
         )
@@ -859,7 +868,8 @@ async def _fetch_tracks_embedded_in_playlist(
     for row in items:
         if not isinstance(row, dict):
             continue
-        track = row.get("track")
+        # "item" is the current non-deprecated field; "track" is the legacy alias.
+        track = row.get("item") or row.get("track")
         if not isinstance(track, dict) or track.get("is_local"):
             continue
         pl = _track_payload_from_raw_dict(track)
