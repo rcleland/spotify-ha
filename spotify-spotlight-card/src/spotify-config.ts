@@ -92,7 +92,7 @@ export interface SpotifySpotlightCardConfig {
    */
   body_top_px?: number;
   /**
-   * Kiosk / display-only mode optimised for a 1920×1080 full-screen panel.
+   * TV / display-only mode optimised for a 1920×1080 full-screen panel.
    * When enabled:
    *   • All interactive controls (transport, volume, source, media-library)
    *     are hidden — the card becomes a pure "now playing" display.
@@ -101,5 +101,5 @@ export interface SpotifySpotlightCardConfig {
    * Corner overlays (time/weather) and the "Up next" pane are unaffected and
    * can still be sized with their own scale options.
    */
-  kiosk_mode?: boolean;
+  tv_mode?: boolean;
 }

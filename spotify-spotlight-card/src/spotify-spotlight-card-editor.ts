@@ -293,7 +293,7 @@ export class SpotifySpotlightCardEditor extends LitElement {
     const weatherTempFallback =
       tempEntityRaw.startsWith("weather.") ? tempEntityRaw : "";
 
-    const isKiosk = this._config.kiosk_mode === true;
+    const isTv = this._config.tv_mode === true;
 
     return html`
       <div class="card-config">
@@ -305,13 +305,13 @@ export class SpotifySpotlightCardEditor extends LitElement {
           : nothing}
 
         <div class="section-title">Display mode</div>
-        <ha-formfield label="Kiosk mode — 1920×1080 full-screen display (hides all controls)">
+        <ha-formfield label="TV mode — view-only display (hides all playback controls)">
           <ha-switch
-            .checked=${isKiosk}
-            @change=${this._kioskModeChanged}
+            .checked=${isTv}
+            @change=${this._tvModeChanged}
           ></ha-switch>
         </ha-formfield>
-        ${isKiosk
+        ${isTv
           ? html`<p class="hint">
               Controls (play, skip, volume, source, media library) are hidden.
               The progress bar shows playback position but is not interactive.
@@ -691,7 +691,7 @@ export class SpotifySpotlightCardEditor extends LitElement {
       type: "custom:spotify-spotlight-card",
       entity: typeof c.entity === "string" ? c.entity : "",
       tall: c.tall !== false,
-      kiosk_mode: c.kiosk_mode === true,
+      tv_mode: c.tv_mode === true,
       name: typeof c.name === "string" && c.name.trim() ? c.name.trim() : undefined,
       show_up_next: c.show_up_next !== false,
       show_browse_media_button: c.show_browse_media_button !== false,
@@ -795,9 +795,9 @@ export class SpotifySpotlightCardEditor extends LitElement {
     this._merge({ tall: el.checked });
   }
 
-  private _kioskModeChanged(ev: Event): void {
+  private _tvModeChanged(ev: Event): void {
     const el = ev.currentTarget as HTMLElement & { checked: boolean };
-    this._merge({ kiosk_mode: el.checked });
+    this._merge({ tv_mode: el.checked });
   }
 
   private _browseButtonChanged(ev: Event): void {

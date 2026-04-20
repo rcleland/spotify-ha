@@ -249,7 +249,7 @@ export class SpotifySpotlightCard extends LitElement {
       background_blur_px,
       background_opacity_percent,
       body_top_px,
-      kiosk_mode: raw.kiosk_mode === true,
+      tv_mode: raw.tv_mode === true,
     };
   }
 
@@ -378,19 +378,19 @@ export class SpotifySpotlightCard extends LitElement {
       height: auto;
     }
 
-    /* ── Kiosk / display-only mode ───────────────────────────────────────────
-     * Fills the full viewport (intended for a 1920×1080 kiosk panel).
+    /* ── TV / display-only mode ──────────────────────────────────────────────
+     * Fills the full viewport (intended for a 1920×1080 TV panel).
      * The bottom-stack (controls, volume, source) is omitted from the template
-     * entirely when kiosk_mode is true — no need to hide it here.
+     * entirely when tv_mode is true — no need to hide it here.
      * The progress bar becomes a read-only indicator (cursor + pointer-events
      * overridden in the template).
      * ──────────────────────────────────────────────────────────────────────── */
-    :host([data-kiosk]) {
+    :host([data-tv]) {
       min-height: 100vh;
       height: 100vh;
     }
 
-    :host([data-kiosk]) .progress-bar {
+    :host([data-tv]) .progress-bar {
       cursor: default;
       pointer-events: none;
     }
@@ -971,10 +971,10 @@ export class SpotifySpotlightCard extends LitElement {
     } else {
       delete this.dataset.tall;
     }
-    if (this.config?.kiosk_mode) {
-      this.dataset.kiosk = "";
+    if (this.config?.tv_mode) {
+      this.dataset.tv = "";
     } else {
-      delete this.dataset.kiosk;
+      delete this.dataset.tv;
     }
 
     const id = this.config?.entity;
@@ -1413,10 +1413,10 @@ export class SpotifySpotlightCard extends LitElement {
     const hasUpNext = showUpNext && nextTitle.length > 0;
 
     const supportedFeat = Number(a.supported_features ?? 0);
-    const isKiosk = this.config.kiosk_mode === true;
+    const isTv = this.config.tv_mode === true;
 
     const showBrowseBtn =
-      !isKiosk &&
+      !isTv &&
       this.config.show_browse_media_button !== false &&
       (supportedFeat === 0 ||
         (supportedFeat & MEDIA_PLAYER_FEATURE_BROWSE_MEDIA) !== 0);
@@ -1498,7 +1498,7 @@ export class SpotifySpotlightCard extends LitElement {
                         <div class="progress-wrap">
                           <div
                             class="progress-bar"
-                            @pointerdown=${isKiosk
+                            @pointerdown=${isTv
                               ? nothing
                               : (ev: PointerEvent) =>
                                   this._seekBarPointerDown(ev, dur)}
@@ -1519,7 +1519,7 @@ export class SpotifySpotlightCard extends LitElement {
               </div>
             </div>
 
-            ${isKiosk ? nothing : html`<div class="bottom-stack">
+            ${isTv ? nothing : html`<div class="bottom-stack">
               <div class="glass-panel controls-main">
                 <div class="transport-side-left">
                   <button
