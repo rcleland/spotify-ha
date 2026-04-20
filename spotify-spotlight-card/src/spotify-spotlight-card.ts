@@ -249,6 +249,7 @@ export class SpotifySpotlightCard extends LitElement {
       background_blur_px,
       background_opacity_percent,
       body_top_px,
+      kiosk_mode: raw.kiosk_mode === true,
     };
   }
 
@@ -375,6 +376,23 @@ export class SpotifySpotlightCard extends LitElement {
       flex: 1 1 auto;
       min-height: 0;
       height: auto;
+    }
+
+    /* ── Kiosk / display-only mode ───────────────────────────────────────────
+     * Fills the full viewport (intended for a 1920×1080 kiosk panel).
+     * The bottom-stack (controls, volume, source) is omitted from the template
+     * entirely when kiosk_mode is true — no need to hide it here.
+     * The progress bar becomes a read-only indicator (cursor + pointer-events
+     * overridden in the template).
+     * ──────────────────────────────────────────────────────────────────────── */
+    :host([data-kiosk]) {
+      min-height: 100vh;
+      height: 100vh;
+    }
+
+    :host([data-kiosk]) .progress-bar {
+      cursor: default;
+      pointer-events: none;
     }
 
     .bottom-stack {
@@ -953,6 +971,11 @@ export class SpotifySpotlightCard extends LitElement {
     } else {
       delete this.dataset.tall;
     }
+    if (this.config?.kiosk_mode) {
+      this.dataset.kiosk = "";
+    } else {
+      delete this.dataset.kiosk;
+    }
 
     const id = this.config?.entity;
     if (changed.has("config")) {
@@ -1390,7 +1413,10 @@ export class SpotifySpotlightCard extends LitElement {
     const hasUpNext = showUpNext && nextTitle.length > 0;
 
     const supportedFeat = Number(a.supported_features ?? 0);
+    const isKiosk = this.config.kiosk_mode === true;
+
     const showBrowseBtn =
+      !isKiosk &&
       this.config.show_browse_media_button !== false &&
       (supportedFeat === 0 ||
         (supportedFeat & MEDIA_PLAYER_FEATURE_BROWSE_MEDIA) !== 0);
@@ -1472,8 +1498,10 @@ export class SpotifySpotlightCard extends LitElement {
                         <div class="progress-wrap">
                           <div
                             class="progress-bar"
-                            @pointerdown=${(ev: PointerEvent) =>
-                              this._seekBarPointerDown(ev, dur)}
+                            @pointerdown=${isKiosk
+                              ? nothing
+                              : (ev: PointerEvent) =>
+                                  this._seekBarPointerDown(ev, dur)}
                           >
                             <div
                               class="progress-fill"
@@ -1491,7 +1519,7 @@ export class SpotifySpotlightCard extends LitElement {
               </div>
             </div>
 
-            <div class="bottom-stack">
+            ${isKiosk ? nothing : html`<div class="bottom-stack">
               <div class="glass-panel controls-main">
                 <div class="transport-side-left">
                   <button
@@ -1625,7 +1653,7 @@ export class SpotifySpotlightCard extends LitElement {
                     : nothing}
                 </div>
               </div>
-            </div>
+            </div>`}
           </div>
           ${hasUpNext
             ? html`

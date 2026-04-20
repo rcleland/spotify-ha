@@ -293,12 +293,32 @@ export class SpotifySpotlightCardEditor extends LitElement {
     const weatherTempFallback =
       tempEntityRaw.startsWith("weather.") ? tempEntityRaw : "";
 
+    const isKiosk = this._config.kiosk_mode === true;
+
     return html`
       <div class="card-config">
         ${!this.hass
           ? html`<p class="warn">
               Home Assistant state is not attached yet — entity lists may be empty
               until the editor finishes loading.
+            </p>`
+          : nothing}
+
+        <div class="section-title">Display mode</div>
+        <ha-formfield label="Kiosk mode — 1920×1080 full-screen display (hides all controls)">
+          <ha-switch
+            .checked=${isKiosk}
+            @change=${this._kioskModeChanged}
+          ></ha-switch>
+        </ha-formfield>
+        ${isKiosk
+          ? html`<p class="hint">
+              Controls (play, skip, volume, source, media library) are hidden.
+              The progress bar shows playback position but is not interactive.
+              The card fills the full viewport height.<br />
+              <strong>Suggested starting values for 1920×1080:</strong>
+              album cover scale 160 %, title &amp; artist scale 300 %,
+              Up next scale 140 %, time &amp; temp scale 140 %.
             </p>`
           : nothing}
 
@@ -671,6 +691,7 @@ export class SpotifySpotlightCardEditor extends LitElement {
       type: "custom:spotify-spotlight-card",
       entity: typeof c.entity === "string" ? c.entity : "",
       tall: c.tall !== false,
+      kiosk_mode: c.kiosk_mode === true,
       name: typeof c.name === "string" && c.name.trim() ? c.name.trim() : undefined,
       show_up_next: c.show_up_next !== false,
       show_browse_media_button: c.show_browse_media_button !== false,
@@ -772,6 +793,11 @@ export class SpotifySpotlightCardEditor extends LitElement {
   private _tallChanged(ev: Event): void {
     const el = ev.currentTarget as HTMLElement & { checked: boolean };
     this._merge({ tall: el.checked });
+  }
+
+  private _kioskModeChanged(ev: Event): void {
+    const el = ev.currentTarget as HTMLElement & { checked: boolean };
+    this._merge({ kiosk_mode: el.checked });
   }
 
   private _browseButtonChanged(ev: Event): void {

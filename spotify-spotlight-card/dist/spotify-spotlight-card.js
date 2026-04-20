@@ -283,12 +283,31 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
             : "24";
         const tempEntityRaw = (this._config.corner_temperature_entity ?? "").trim();
         const weatherTempFallback = tempEntityRaw.startsWith("weather.") ? tempEntityRaw : "";
+        const isKiosk = this._config.kiosk_mode === true;
         return b `
       <div class="card-config">
         ${!this.hass
             ? b `<p class="warn">
               Home Assistant state is not attached yet — entity lists may be empty
               until the editor finishes loading.
+            </p>`
+            : A}
+
+        <div class="section-title">Display mode</div>
+        <ha-formfield label="Kiosk mode — 1920×1080 full-screen display (hides all controls)">
+          <ha-switch
+            .checked=${isKiosk}
+            @change=${this._kioskModeChanged}
+          ></ha-switch>
+        </ha-formfield>
+        ${isKiosk
+            ? b `<p class="hint">
+              Controls (play, skip, volume, source, media library) are hidden.
+              The progress bar shows playback position but is not interactive.
+              The card fills the full viewport height.<br />
+              <strong>Suggested starting values for 1920×1080:</strong>
+              album cover scale 160 %, title &amp; artist scale 300 %,
+              Up next scale 140 %, time &amp; temp scale 140 %.
             </p>`
             : A}
 
@@ -632,6 +651,7 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
             type: "custom:spotify-spotlight-card",
             entity: typeof c.entity === "string" ? c.entity : "",
             tall: c.tall !== false,
+            kiosk_mode: c.kiosk_mode === true,
             name: typeof c.name === "string" && c.name.trim() ? c.name.trim() : undefined,
             show_up_next: c.show_up_next !== false,
             show_browse_media_button: c.show_browse_media_button !== false,
@@ -720,6 +740,10 @@ let SpotifySpotlightCardEditor = class SpotifySpotlightCardEditor extends i {
     _tallChanged(ev) {
         const el = ev.currentTarget;
         this._merge({ tall: el.checked });
+    }
+    _kioskModeChanged(ev) {
+        const el = ev.currentTarget;
+        this._merge({ kiosk_mode: el.checked });
     }
     _browseButtonChanged(ev) {
         const el = ev.currentTarget;
@@ -973,6 +997,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             background_blur_px,
             background_opacity_percent,
             body_top_px,
+            kiosk_mode: raw.kiosk_mode === true,
         };
     }
     static { this.styles = i$3 `
@@ -1088,6 +1113,23 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
       flex: 1 1 auto;
       min-height: 0;
       height: auto;
+    }
+
+    /* ── Kiosk / display-only mode ───────────────────────────────────────────
+     * Fills the full viewport (intended for a 1920×1080 kiosk panel).
+     * The bottom-stack (controls, volume, source) is omitted from the template
+     * entirely when kiosk_mode is true — no need to hide it here.
+     * The progress bar becomes a read-only indicator (cursor + pointer-events
+     * overridden in the template).
+     * ──────────────────────────────────────────────────────────────────────── */
+    :host([data-kiosk]) {
+      min-height: 100vh;
+      height: 100vh;
+    }
+
+    :host([data-kiosk]) .progress-bar {
+      cursor: default;
+      pointer-events: none;
     }
 
     .bottom-stack {
@@ -1662,6 +1704,12 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
         else {
             delete this.dataset.tall;
         }
+        if (this.config?.kiosk_mode) {
+            this.dataset.kiosk = "";
+        }
+        else {
+            delete this.dataset.kiosk;
+        }
         const id = this.config?.entity;
         if (changed.has("config")) {
             this._stopTimers();
@@ -2048,7 +2096,9 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
         const nextThumb = String(a.media_next_thumbnail ?? "").trim() || "";
         const hasUpNext = showUpNext && nextTitle.length > 0;
         const supportedFeat = Number(a.supported_features ?? 0);
-        const showBrowseBtn = this.config.show_browse_media_button !== false &&
+        const isKiosk = this.config.kiosk_mode === true;
+        const showBrowseBtn = !isKiosk &&
+            this.config.show_browse_media_button !== false &&
             (supportedFeat === 0 ||
                 (supportedFeat & MEDIA_PLAYER_FEATURE_BROWSE_MEDIA) !== 0);
         const showCornerTime = this.config.show_corner_time === true;
@@ -2123,7 +2173,9 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
                         <div class="progress-wrap">
                           <div
                             class="progress-bar"
-                            @pointerdown=${(ev) => this._seekBarPointerDown(ev, dur)}
+                            @pointerdown=${isKiosk
+                ? A
+                : (ev) => this._seekBarPointerDown(ev, dur)}
                           >
                             <div
                               class="progress-fill"
@@ -2141,7 +2193,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
               </div>
             </div>
 
-            <div class="bottom-stack">
+            ${isKiosk ? A : b `<div class="bottom-stack">
               <div class="glass-panel controls-main">
                 <div class="transport-side-left">
                   <button
@@ -2270,7 +2322,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             : A}
                 </div>
               </div>
-            </div>
+            </div>`}
           </div>
           ${hasUpNext
             ? b `

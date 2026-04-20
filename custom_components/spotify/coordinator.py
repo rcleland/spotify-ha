@@ -45,7 +45,7 @@ class SpotifyData:
     devices: SpotifyDeviceCoordinator
 
 
-UPDATE_INTERVAL = timedelta(seconds=30)
+UPDATE_INTERVAL = timedelta(seconds=5)
 
 FREE_API_BLOGPOST = (
     "https://developer.spotify.com/blog/"
