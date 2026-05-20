@@ -97,16 +97,15 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
         };
     }
     static { this.styles = i$3 `
+    /*
+     * font-size drives all em-based sizing. At 800px viewport height the base
+     * is 16px (full size). Below that every dimension scales down smoothly so
+     * all content fits without scrolling or clipping on small landscape screens.
+     */
     :host {
       display: block;
       height: 100%;
-      min-height: 360px;
-      --spot-radius: 20px;
-      --spot-gap: 16px;
-      --spot-art-size: min(240px, 42vw);
-      --spot-ctrl-size: 52px;
-      --spot-ctrl-primary: 68px;
-      --spot-padding: 24px;
+      font-size: min(2vh, 16px);
       --spot-text: rgba(255, 255, 255, 0.96);
       --spot-muted: rgba(255, 255, 255, 0.62);
       --spot-glass: rgba(12, 12, 18, 0.38);
@@ -116,40 +115,10 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
       -webkit-font-smoothing: antialiased;
     }
 
-    :host([data-tall]) {
-      min-height: min(calc(100vh - 140px), 100%);
-    }
-
-    /* Compact layout for short landscape screens */
-    @media (max-height: 680px) {
-      :host {
-        --spot-gap: 10px;
-        --spot-art-size: min(160px, 28vw);
-        --spot-ctrl-size: 44px;
-        --spot-ctrl-primary: 58px;
-        --spot-padding: 16px;
-        min-height: 0;
-      }
-      :host([data-tall]) {
-        min-height: 0;
-      }
-    }
-
-    @media (max-height: 480px) {
-      :host {
-        --spot-gap: 8px;
-        --spot-art-size: min(120px, 22vw);
-        --spot-ctrl-size: 38px;
-        --spot-ctrl-primary: 50px;
-        --spot-padding: 12px;
-      }
-    }
-
     .wrap {
       position: relative;
-      border-radius: var(--spot-radius);
+      border-radius: 1.25em;
       overflow: hidden;
-      min-height: inherit;
       height: 100%;
       box-sizing: border-box;
       isolation: isolate;
@@ -157,7 +126,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
 
     .backdrop {
       position: absolute;
-      inset: -24px;
+      inset: -1.5em;
       background-size: cover;
       background-position: center;
       filter: blur(36px) saturate(1.15);
@@ -191,72 +160,45 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
       z-index: 2;
       display: flex;
       flex-direction: column;
-      gap: var(--spot-gap);
-      padding: var(--spot-padding);
+      gap: 1em;
+      padding: 1.5em;
       height: 100%;
-      min-height: inherit;
       box-sizing: border-box;
-      overflow-y: auto;
-      scrollbar-width: thin;
-      scrollbar-color: rgba(255,255,255,0.18) transparent;
+      overflow: hidden;
     }
 
     .body.has-up-next {
-      padding-bottom: 100px;
-    }
-
-    @media (max-height: 680px) {
-      .body.has-up-next {
-        padding-bottom: 80px;
-      }
+      padding-bottom: 7em;
     }
 
     .up-next {
       position: absolute;
-      bottom: 20px;
-      right: 20px;
+      bottom: 1.25em;
+      right: 1.25em;
       left: auto;
       display: flex;
       align-items: center;
-      gap: 12px;
-      padding: 10px 14px 10px 10px;
-      max-width: min(320px, calc(100% - 48px));
+      gap: 0.75em;
+      padding: 0.625em 0.875em 0.625em 0.625em;
+      max-width: min(20em, calc(100% - 3em));
       background: var(--spot-glass-strong);
       backdrop-filter: blur(22px);
       -webkit-backdrop-filter: blur(22px);
-      border-radius: 16px;
+      border-radius: 1em;
       border: 1px solid rgba(255, 255, 255, 0.14);
-      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+      box-shadow: 0 1em 3em rgba(0, 0, 0, 0.5);
       z-index: 6;
       text-align: left;
     }
 
-    @media (max-height: 680px) {
-      .up-next {
-        bottom: 12px;
-        right: 12px;
-        padding: 8px 10px 8px 8px;
-        gap: 8px;
-        border-radius: 12px;
-      }
-    }
-
     .up-next-cover {
-      width: 56px;
-      height: 56px;
-      border-radius: 10px;
+      width: 3.5em;
+      height: 3.5em;
+      border-radius: 0.625em;
       object-fit: cover;
       flex-shrink: 0;
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+      box-shadow: 0 0.5em 1.5em rgba(0, 0, 0, 0.45);
       background: rgba(0, 0, 0, 0.35);
-    }
-
-    @media (max-height: 680px) {
-      .up-next-cover {
-        width: 42px;
-        height: 42px;
-        border-radius: 8px;
-      }
     }
 
     .up-next-copy {
@@ -265,16 +207,16 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
     }
 
     .up-next-label {
-      font-size: 0.68rem;
+      font-size: 0.68em;
       letter-spacing: 0.12em;
       text-transform: uppercase;
       color: var(--spot-muted);
-      margin: 0 0 4px;
+      margin: 0 0 0.25em;
     }
 
     .up-next-title {
       margin: 0;
-      font-size: 0.95rem;
+      font-size: 0.95em;
       font-weight: 600;
       line-height: 1.25;
       overflow: hidden;
@@ -284,8 +226,8 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
     }
 
     .up-next-artist {
-      margin: 4px 0 0;
-      font-size: 0.82rem;
+      margin: 0.25em 0 0;
+      font-size: 0.82em;
       color: var(--spot-muted);
       overflow: hidden;
       text-overflow: ellipsis;
@@ -294,24 +236,18 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
 
     .top {
       display: flex;
-      gap: 20px;
+      gap: 1.25em;
       align-items: stretch;
       flex-wrap: wrap;
     }
 
-    @media (max-height: 680px) {
-      .top {
-        gap: 12px;
-      }
-    }
-
     .art {
       flex: 0 0 auto;
-      width: var(--spot-art-size);
+      width: min(15em, 42vw);
       aspect-ratio: 1;
-      border-radius: 16px;
+      border-radius: 1em;
       overflow: hidden;
-      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+      box-shadow: 0 1.5em 3.75em rgba(0, 0, 0, 0.55);
       background: rgba(0, 0, 0, 0.35);
     }
 
@@ -323,16 +259,16 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
     }
 
     .meta {
-      flex: 1 1 200px;
+      flex: 1 1 12.5em;
       display: flex;
       flex-direction: column;
       justify-content: flex-end;
-      gap: 8px;
+      gap: 0.5em;
       min-width: 0;
     }
 
     .label {
-      font-size: 0.78rem;
+      font-size: 0.78em;
       letter-spacing: 0.08em;
       text-transform: uppercase;
       color: var(--spot-muted);
@@ -341,33 +277,27 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
     h2 {
       margin: 0;
       font-weight: 650;
-      font-size: clamp(1.1rem, 3vw, 1.85rem);
+      font-size: clamp(1em, 3vw, 1.85em);
       line-height: 1.15;
-      text-shadow: 0 2px 24px rgba(0, 0, 0, 0.55);
+      text-shadow: 0 0.125em 1.5em rgba(0, 0, 0, 0.55);
       word-break: break-word;
-    }
-
-    @media (max-height: 680px) {
-      h2 {
-        font-size: clamp(0.95rem, 2.5vw, 1.4rem);
-      }
     }
 
     .artist {
       margin: 0;
-      font-size: 1.05rem;
+      font-size: 1.05em;
       color: var(--spot-muted);
       font-weight: 450;
     }
 
     .progress-wrap {
-      margin-top: 8px;
+      margin-top: 0.5em;
     }
 
     .progress-bar {
       display: block;
-      height: 4px;
-      border-radius: 4px;
+      height: 0.25em;
+      border-radius: 0.25em;
       background: rgba(255, 255, 255, 0.14);
       overflow: hidden;
     }
@@ -375,45 +305,32 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
     .progress-fill {
       height: 100%;
       background: rgb(29, 185, 84);
-      border-radius: 4px;
+      border-radius: 0.25em;
       transition: width 0.35s ease;
     }
 
     .time-row {
       display: flex;
       justify-content: space-between;
-      font-size: 0.75rem;
+      font-size: 0.75em;
       color: var(--spot-muted);
-      margin-top: 6px;
+      margin-top: 0.375em;
     }
 
     .glass-panel {
       background: var(--spot-glass);
       backdrop-filter: blur(18px);
       -webkit-backdrop-filter: blur(18px);
-      border-radius: 16px;
-      padding: 14px 16px;
+      border-radius: 1em;
+      padding: 0.875em 1em;
       border: 1px solid rgba(255, 255, 255, 0.08);
-    }
-
-    @media (max-height: 680px) {
-      .glass-panel {
-        padding: 10px 12px;
-        border-radius: 12px;
-      }
-    }
-
-    @media (max-height: 480px) {
-      .glass-panel {
-        padding: 7px 10px;
-      }
     }
 
     .controls-main {
       display: flex;
       align-items: center;
       justify-content: center;
-      gap: 12px;
+      gap: 0.75em;
       flex-wrap: wrap;
     }
 
@@ -421,8 +338,8 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      width: var(--spot-ctrl-size);
-      height: var(--spot-ctrl-size);
+      width: 3.25em;
+      height: 3.25em;
       border-radius: 50%;
       border: none;
       cursor: pointer;
@@ -437,8 +354,8 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
     }
 
     .ctrl-btn.primary {
-      width: var(--spot-ctrl-primary);
-      height: var(--spot-ctrl-primary);
+      width: 4.25em;
+      height: 4.25em;
       background: rgb(29, 185, 84);
       color: #05140a;
     }
@@ -454,7 +371,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
     .vol-row {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 0.75em;
     }
 
     .vol-row ha-slider {
@@ -467,25 +384,31 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
       accent-color: rgb(29, 185, 84);
     }
 
+    .vol-mute-btn {
+      width: 2.75em;
+      height: 2.75em;
+      flex-shrink: 0;
+    }
+
     .source-row {
       display: flex;
       flex-wrap: wrap;
-      gap: 10px;
+      gap: 0.625em;
       align-items: center;
       justify-content: space-between;
     }
 
     .source-row label {
-      font-size: 0.8rem;
+      font-size: 0.8em;
       color: var(--spot-muted);
-      margin-right: 8px;
+      margin-right: 0.5em;
     }
 
     select.source-select {
       flex: 1;
-      min-width: 160px;
-      padding: 10px 12px;
-      border-radius: 12px;
+      min-width: 10em;
+      padding: 0.625em 0.75em;
+      border-radius: 0.75em;
       border: 1px solid rgba(255, 255, 255, 0.15);
       background: var(--spot-glass-strong);
       color: var(--spot-text);
@@ -494,9 +417,9 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
 
     .playlist-strip {
       display: flex;
-      gap: 10px;
+      gap: 0.625em;
       overflow-x: auto;
-      padding-bottom: 6px;
+      padding-bottom: 0.375em;
       scrollbar-width: thin;
     }
 
@@ -504,15 +427,15 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
       flex: 0 0 auto;
       display: flex;
       align-items: center;
-      gap: 10px;
-      padding: 8px 14px;
+      gap: 0.625em;
+      padding: 0.5em 0.875em;
       border-radius: 999px;
       border: 1px solid rgba(255, 255, 255, 0.12);
       background: rgba(255, 255, 255, 0.08);
       cursor: pointer;
       color: var(--spot-text);
-      font-size: 0.9rem;
-      max-width: 240px;
+      font-size: 0.9em;
+      max-width: 15em;
       transition: background 0.15s ease;
     }
 
@@ -521,9 +444,9 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
     }
 
     .pl-chip img {
-      width: 36px;
-      height: 36px;
-      border-radius: 8px;
+      width: 2.25em;
+      height: 2.25em;
+      border-radius: 0.5em;
       object-fit: cover;
       flex-shrink: 0;
     }
@@ -535,19 +458,19 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
     }
 
     .section-title {
-      margin: 0 0 8px;
-      font-size: 0.85rem;
+      margin: 0 0 0.5em;
+      font-size: 0.85em;
       color: var(--spot-muted);
       letter-spacing: 0.04em;
     }
 
     .error {
-      font-size: 0.85rem;
+      font-size: 0.85em;
       color: #ffb4b4;
     }
 
     .subtle {
-      font-size: 0.85rem;
+      font-size: 0.85em;
       color: var(--spot-muted);
     }
   `; }
@@ -686,7 +609,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
               ${pic
             ? b `<img src=${pic} alt="" />`
             : b `<div
-                    style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:3rem;opacity:.35"
+                    style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:3em;opacity:.35"
                   >
                     ♪
                   </div>`}
@@ -731,7 +654,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             >
               <ha-icon
                 icon=${playing ? "mdi:pause" : "mdi:play"}
-                style="font-size:28px"
+                style="font-size:1.75em"
               ></ha-icon>
             </button>
             <button
@@ -782,8 +705,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
         }}
             />
             <button
-              class="ctrl-btn"
-              style="width:44px;height:44px"
+              class="ctrl-btn vol-mute-btn"
               @click=${() => this._callService("volume_mute", { is_volume_muted: !muted })}
               title=${muted ? "Unmute" : "Mute"}
             >
@@ -821,7 +743,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
           </div>
 
           <div>
-            <p class="section-title" style="display:flex;align-items:center;gap:10px;">
+            <p class="section-title" style="display:flex;align-items:center;gap:0.625em;">
               <span>Playlists</span>
               ${this._loadingLists
             ? b `<span class="subtle">loading…</span>`
@@ -829,7 +751,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
               <button
                 type="button"
                 class="ctrl-btn"
-                style="width:36px;height:36px;margin-left:auto"
+                style="width:2.25em;height:2.25em;margin-left:auto"
                 title="Refresh playlists"
                 @click=${() => void this._loadPlaylists()}
               >
@@ -871,7 +793,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
                         />`
                 : b `<div
                         class="up-next-cover"
-                        style="display:flex;align-items:center;justify-content:center;font-size:1.5rem;opacity:.5"
+                        style="display:flex;align-items:center;justify-content:center;font-size:1.5em;opacity:.5"
                       >
                         <ha-icon icon="mdi:music-note"></ha-icon>
                       </div>`}
