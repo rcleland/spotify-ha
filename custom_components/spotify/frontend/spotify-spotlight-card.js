@@ -87,6 +87,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
         this._loadingLists = false;
         /** Avoid hammering browse_media on every state update */
         this._playlistLoadedForEntity = null;
+        this._rafPending = false;
     }
     static getStubConfig() {
         return {
@@ -97,15 +98,9 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
         };
     }
     static { this.styles = i$3 `
-    /*
-     * font-size drives all em-based sizing. At 800px viewport height the base
-     * is 16px (full size). Below that every dimension scales down smoothly so
-     * all content fits without scrolling or clipping on small landscape screens.
-     */
     :host {
       display: block;
       height: 100%;
-      font-size: min(2vh, 16px);
       --spot-text: rgba(255, 255, 255, 0.96);
       --spot-muted: rgba(255, 255, 255, 0.62);
       --spot-glass: rgba(12, 12, 18, 0.38);
@@ -155,6 +150,11 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
       z-index: 1;
     }
 
+    /*
+     * .body is sized naturally (height: auto) so we can measure its true
+     * content height and apply a zoom via JS to fill the available panel space.
+     * transform-origin: top left keeps the zoom anchored to the top of the card.
+     */
     .body {
       position: relative;
       z-index: 2;
@@ -162,15 +162,16 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
       flex-direction: column;
       gap: 1em;
       padding: 1.5em;
-      height: 100%;
+      height: auto;
       box-sizing: border-box;
-      overflow: hidden;
+      transform-origin: top left;
     }
 
     .body.has-up-next {
       padding-bottom: 7em;
     }
 
+    /* up-next lives inside .wrap (not .body) so it isn't affected by body zoom */
     .up-next {
       position: absolute;
       bottom: 1.25em;
@@ -474,6 +475,48 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
       color: var(--spot-muted);
     }
   `; }
+    connectedCallback() {
+        super.connectedCallback();
+        this._ro = new ResizeObserver(() => this._scheduleRescale());
+        this._ro.observe(this);
+    }
+    disconnectedCallback() {
+        super.disconnectedCallback();
+        this._ro?.disconnect();
+        this._ro = undefined;
+    }
+    /** Schedule a rescale on the next animation frame to avoid ResizeObserver loops. */
+    _scheduleRescale() {
+        if (this._rafPending)
+            return;
+        this._rafPending = true;
+        requestAnimationFrame(() => {
+            this._rafPending = false;
+            this._rescale();
+        });
+    }
+    /**
+     * Zoom .body so its content fills the available card height exactly.
+     * Uses zoom (not transform: scale) so the layout box shrinks/grows with it.
+     */
+    _rescale() {
+        const body = this.shadowRoot?.querySelector(".body");
+        if (!body)
+            return;
+        // Reset zoom to get true content height.
+        body.style.zoom = "";
+        const available = this.clientHeight;
+        if (available <= 0)
+            return;
+        const natural = body.scrollHeight;
+        if (natural <= 0)
+            return;
+        const ratio = available / natural;
+        // Only scale down (don't scale up beyond 1:1 — let the card breathe on large screens).
+        if (ratio < 1) {
+            body.style.zoom = String(ratio);
+        }
+    }
     updated(changed) {
         super.updated(changed);
         if (this.config?.tall) {
@@ -484,6 +527,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
         }
         const id = this.config?.entity;
         if (!this.hass || !id) {
+            this._scheduleRescale();
             return;
         }
         if (changed.has("config") ||
@@ -491,6 +535,8 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             this._playlistLoadedForEntity = id;
             void this._loadPlaylists();
         }
+        // Rescale after any content change (e.g. playlists loaded, progress update).
+        this._scheduleRescale();
     }
     get _entity() {
         return this.hass?.states[this.config?.entity];
@@ -603,6 +649,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
           style=${pic ? `background-image:url("${pic}")` : ""}
         ></div>
         <div class="scrim"></div>
+
         <div class="body ${hasUpNext ? "has-up-next" : ""}">
           <div class="top">
             <div class="art">
@@ -780,34 +827,34 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             ? b `<div class="subtle">No playlists loaded</div>`
             : A}
           </div>
+        </div>
 
-          ${hasUpNext
+        ${hasUpNext
             ? b `
-                <aside class="up-next" aria-label="Up next">
-                  ${nextThumb
+              <aside class="up-next" aria-label="Up next">
+                ${nextThumb
                 ? b `<img
-                          class="up-next-cover"
-                          src=${nextThumb}
-                          alt=""
-                          loading="lazy"
-                        />`
-                : b `<div
                         class="up-next-cover"
-                        style="display:flex;align-items:center;justify-content:center;font-size:1.5em;opacity:.5"
-                      >
-                        <ha-icon icon="mdi:music-note"></ha-icon>
-                      </div>`}
-                  <div class="up-next-copy">
-                    <p class="up-next-label">Up next</p>
-                    <p class="up-next-title">${nextTitle}</p>
-                    ${nextArtist
+                        src=${nextThumb}
+                        alt=""
+                        loading="lazy"
+                      />`
+                : b `<div
+                      class="up-next-cover"
+                      style="display:flex;align-items:center;justify-content:center;font-size:1.5em;opacity:.5"
+                    >
+                      <ha-icon icon="mdi:music-note"></ha-icon>
+                    </div>`}
+                <div class="up-next-copy">
+                  <p class="up-next-label">Up next</p>
+                  <p class="up-next-title">${nextTitle}</p>
+                  ${nextArtist
                 ? b `<p class="up-next-artist">${nextArtist}</p>`
                 : A}
-                  </div>
-                </aside>
-              `
+                </div>
+              </aside>
+            `
             : A}
-        </div>
       </div>
     `;
     }
