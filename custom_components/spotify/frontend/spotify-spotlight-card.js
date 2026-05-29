@@ -97,6 +97,12 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             show_up_next: true,
         };
     }
+    setConfig(config) {
+        if (!config.entity) {
+            throw new Error("Please define an entity in the card configuration");
+        }
+        this.config = config;
+    }
     static { this.styles = i$3 `
     :host {
       display: block;
@@ -863,7 +869,7 @@ __decorate([
     n({ attribute: false })
 ], SpotifySpotlightCard.prototype, "hass", void 0);
 __decorate([
-    n({ type: Object })
+    n({ attribute: false })
 ], SpotifySpotlightCard.prototype, "config", void 0);
 __decorate([
     r()
