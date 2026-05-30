@@ -564,6 +564,146 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             ...data,
         });
     }
+    /** Tail segment of a browse media_content_id (handles spotify://entry/... URLs). */
+    _browseTailId(mediaContentId) {
+        if (!mediaContentId) {
+            return "";
+        }
+        const uriMatch = mediaContentId.match(/spotify:[^/]+(?::[^/]+)*$/);
+        if (uriMatch) {
+            return uriMatch[0];
+        }
+        if (mediaContentId.startsWith("spotify://")) {
+            try {
+                const parsed = new URL(mediaContentId);
+                const tail = parsed.pathname.replace(/^\//, "");
+                return tail || parsed.hostname || mediaContentId;
+            }
+            catch {
+                return mediaContentId;
+            }
+        }
+        if (mediaContentId.includes("/")) {
+            return mediaContentId.split("/").pop() ?? mediaContentId;
+        }
+        return mediaContentId;
+    }
+    _browseTypeTail(mediaContentType) {
+        return (mediaContentType ?? "").replace(/^spotify:\/\//, "");
+    }
+    _isPlaylistsFolder(item) {
+        const id = this._browseTailId(item.media_content_id);
+        const type = this._browseTypeTail(item.media_content_type);
+        return (id === "current_user_playlists" ||
+            type === "current_user_playlists" ||
+            item.title === "Playlists");
+    }
+    _browseTitle(item) {
+        const title = (item.title ?? "").trim();
+        if (title) {
+            return title;
+        }
+        const id = this._browseTailId(item.media_content_id);
+        if (id.startsWith("spotify:playlist:")) {
+            return id.split(":").pop() ?? "Playlist";
+        }
+        return "Playlist";
+    }
+    _mediaUrl(url) {
+        if (!url) {
+            return undefined;
+        }
+        if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("//")) {
+            return url;
+        }
+        if (url.startsWith("/")) {
+            return `${window.location.origin}${url}`;
+        }
+        return url;
+    }
+    _looksLikeDeviceId(value) {
+        const trimmed = value.trim();
+        if (!trimmed) {
+            return false;
+        }
+        if (/^spotify:/.test(trimmed) || trimmed.startsWith("spotify://")) {
+            return true;
+        }
+        return /^[0-9a-f]{16,}$/i.test(trimmed) || /^[0-9a-f-]{20,}$/i.test(trimmed);
+    }
+    _sourceDevices(attrs) {
+        const raw = attrs.source_devices;
+        if (!Array.isArray(raw)) {
+            return [];
+        }
+        return raw.filter((entry) => typeof entry === "object" && entry !== null);
+    }
+    _sourceLabel(source, sourceList, attrs) {
+        const trimmed = source.trim();
+        if (!trimmed) {
+            return "—";
+        }
+        if (!this._looksLikeDeviceId(trimmed)) {
+            return trimmed;
+        }
+        const devices = this._sourceDevices(attrs);
+        const byId = devices.find((d) => d.id === trimmed);
+        if (byId?.name && !this._looksLikeDeviceId(byId.name)) {
+            return byId.name;
+        }
+        const friendly = sourceList.find((name) => name && !this._looksLikeDeviceId(name));
+        if (friendly) {
+            return friendly;
+        }
+        if (byId?.type) {
+            return byId.type;
+        }
+        return trimmed.length > 12 ? `${trimmed.slice(0, 8)}…` : trimmed;
+    }
+    _sourceOptions(source, sourceList, attrs) {
+        const devices = this._sourceDevices(attrs);
+        if (devices.length) {
+            return devices.map((device) => {
+                const value = device.id ?? device.name ?? "";
+                const label = device.name && !this._looksLikeDeviceId(device.name)
+                    ? device.name
+                    : device.type ?? value;
+                return { value, label };
+            });
+        }
+        return sourceList.map((name) => ({ value: name, label: name }));
+    }
+    async _findPlaylistsFolder(root) {
+        const direct = root.children?.find((child) => this._isPlaylistsFolder(child));
+        if (direct) {
+            return direct;
+        }
+        const library = root.children?.find((child) => child.title === "Media Library" ||
+            this._browseTailId(child.media_content_id) === "library" ||
+            this._browseTypeTail(child.media_content_type) === "library");
+        if (library?.media_content_type && library.media_content_id) {
+            const lib = await this._browse(library.media_content_type, library.media_content_id);
+            const nested = lib.children?.find((child) => this._isPlaylistsFolder(child));
+            if (nested) {
+                return nested;
+            }
+        }
+        for (const child of root.children ?? []) {
+            if (!child.can_expand || !child.media_content_type || !child.media_content_id) {
+                continue;
+            }
+            if (child.media_class !== "app" &&
+                this._browseTypeTail(child.media_content_type) !== "library") {
+                continue;
+            }
+            const nested = await this._browse(child.media_content_type, child.media_content_id);
+            const found = await this._findPlaylistsFolder(nested);
+            if (found) {
+                return found;
+            }
+        }
+        return null;
+    }
     async _loadPlaylists() {
         if (!this.hass || !this.config?.entity) {
             return;
@@ -571,9 +711,8 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
         this._loadingLists = true;
         this._browseError = null;
         try {
-            const lib = await this._browse(null, null);
-            const playlistsFolder = lib.children?.find((c) => c.media_content_id === "current_user_playlists" ||
-                c.title === "Playlists");
+            const root = await this._browse(undefined, undefined);
+            const playlistsFolder = await this._findPlaylistsFolder(root);
             if (!playlistsFolder?.media_content_type || !playlistsFolder.media_content_id) {
                 this._playlists = [];
                 return;
@@ -595,12 +734,17 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
         if (!this.hass) {
             throw new Error("No connection");
         }
-        const result = await this.hass.callWS({
-            type: "browse_media",
+        const msg = {
+            type: "media_player/browse_media",
             entity_id: this.config.entity,
-            media_content_type,
-            media_content_id,
-        });
+        };
+        if (media_content_type !== undefined) {
+            msg.media_content_type = media_content_type;
+        }
+        if (media_content_id !== undefined) {
+            msg.media_content_id = media_content_id;
+        }
+        const result = await this.hass.callWS(msg);
         return result;
     }
     async _playPlaylist(child) {
@@ -635,6 +779,11 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             "";
         const src = a.source ?? "";
         const srcList = a.source_list ?? [];
+        const srcLabel = this._sourceLabel(src, srcList, a);
+        const srcOptions = this._sourceOptions(src, srcList, a);
+        const selectedSource = srcOptions.find((option) => option.value === src ||
+            option.label === src ||
+            option.label === srcLabel)?.value ?? src;
         const vol = a.volume_level ?? 0;
         const muted = Boolean(a.is_volume_muted);
         const shuffle = Boolean(a.shuffle);
@@ -772,22 +921,26 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             <div class="source-row">
               <div>
                 <label>Source</label>
-                <span class="subtle">${src || "—"}</span>
+                <span class="subtle">${srcLabel}</span>
               </div>
-              ${srcList.length
+              ${srcOptions.length
             ? b `
                     <select
                       class="source-select"
-                      .value=${src}
+                      .value=${selectedSource}
                       @change=${(ev) => {
                 const v = ev.target.value;
+                const option = srcOptions.find((o) => o.value === v);
                 void this._callService("select_source", {
-                    source: v,
+                    source: option?.label ?? v,
                 });
             }}
                     >
-                      ${srcList.map((s) => b `<option value=${s} .selected=${s === src}>
-                            ${s}
+                      ${srcOptions.map((option) => b `<option
+                            value=${option.value}
+                            .selected=${option.value === src || option.label === src}
+                          >
+                            ${option.label}
                           </option>`)}
                     </select>
                   `
@@ -815,17 +968,21 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
             ? b `<div class="error">${this._browseError}</div>`
             : A}
             <div class="playlist-strip">
-              ${this._playlists.map((pl) => b `
+              ${this._playlists.map((pl) => {
+            const plTitle = this._browseTitle(pl);
+            const plThumb = this._mediaUrl(pl.thumbnail);
+            return b `
                   <button
                     class="pl-chip"
                     @click=${() => this._playPlaylist(pl)}
                   >
-                    ${pl.thumbnail
-            ? b `<img src=${pl.thumbnail} alt="" />`
-            : b `<ha-icon icon="mdi:music-box-multiple"></ha-icon>`}
-                    <span class="pl-title">${pl.title}</span>
+                    ${plThumb
+                ? b `<img src=${plThumb} alt="" />`
+                : b `<ha-icon icon="mdi:music-box-multiple"></ha-icon>`}
+                    <span class="pl-title">${plTitle}</span>
                   </button>
-                `)}
+                `;
+        })}
             </div>
             ${!this._loadingLists &&
             !this._playlists.length &&

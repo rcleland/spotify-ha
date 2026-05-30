@@ -12,6 +12,7 @@ from spotifyaio import (
     BasePlaylist,
     Image,
     Playlist,
+    PlaylistResponse,
     SpotifyClient,
     SpotifyConnectionError,
     SpotifyNotFoundError,
@@ -95,10 +96,21 @@ async def async_get_playlists_for_current_user_resilient(
         if isinstance(item, dict):
             _patch_playlist_dict_for_spotifyaio(item)
 
-    playlist_models = importlib.import_module("spotifyaio.models.playlist")
-    return playlist_models.PlaylistResponse.from_json(
-        orjson.dumps(data).decode()
-    ).items
+    try:
+        return PlaylistResponse.from_json(orjson.dumps(data).decode()).items
+    except Exception:
+        _LOGGER.debug(
+            "PlaylistResponse.from_json failed; trying spotifyaio.models.playlist",
+            exc_info=True,
+        )
+    try:
+        playlist_models = importlib.import_module("spotifyaio.models.playlist")
+        return playlist_models.PlaylistResponse.from_json(
+            orjson.dumps(data).decode()
+        ).items
+    except Exception:
+        _LOGGER.debug("Could not parse playlist list response", exc_info=True)
+        return []
 
 
 def is_spotify_media_type(media_content_type: str) -> bool:

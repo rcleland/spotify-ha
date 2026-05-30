@@ -9,6 +9,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Concatenate
 
 from spotifyaio import (
+    Device,
     Episode,
     Item,
     ItemType,
@@ -73,6 +74,43 @@ REPEAT_MODE_MAPPING_TO_SPOTIFY = {
     value: key for key, value in REPEAT_MODE_MAPPING_TO_HA.items()
 }
 AFTER_REQUEST_SLEEP = 1
+
+
+def _looks_like_device_id(value: str) -> bool:
+    """Return whether a string looks like a Spotify device id, not a label."""
+    trimmed = value.strip()
+    if not trimmed:
+        return False
+    if trimmed.startswith("spotify:") or trimmed.startswith("spotify://"):
+        return True
+    if len(trimmed) >= 16 and all(ch in "0123456789abcdef-" for ch in trimmed.lower()):
+        return True
+    return False
+
+
+def _device_display_name(device: Device) -> str:
+    """Prefer human-readable device names; fall back to type + short id."""
+    name = (device.name or "").strip()
+    device_id = device.device_id or ""
+    if name and not _looks_like_device_id(name) and name != device_id:
+        return name
+    type_label = getattr(device.device_type, "value", str(device.device_type))
+    if device_id:
+        short_id = device_id if len(device_id) <= 12 else f"{device_id[:8]}…"
+        return f"{type_label} ({short_id})"
+    return type_label or "Spotify device"
+
+
+def _device_matches_source(device: Device, source: str) -> bool:
+    """Match select_source by friendly name or raw device id."""
+    trimmed = source.strip()
+    if not trimmed:
+        return False
+    if device.device_id and trimmed == device.device_id:
+        return True
+    if trimmed == device.name:
+        return True
+    return trimmed == _device_display_name(device)
 
 
 async def async_setup_entry(
@@ -267,12 +305,18 @@ class SpotifyMediaPlayer(SpotifyEntity, MediaPlayerEntity):
         """Return the current playback device."""
         if not self.currently_playing:
             return None
-        return self.currently_playing.device.name
+        active = self.currently_playing.device
+        active_id = active.device_id
+        if active_id:
+            for device in self.devices.data:
+                if device.device_id == active_id:
+                    return _device_display_name(device)
+        return _device_display_name(active)
 
     @property
     def source_list(self) -> list[str] | None:
         """Return a list of source devices."""
-        return [device.name for device in self.devices.data]
+        return [_device_display_name(device) for device in self.devices.data]
 
     @property
     def shuffle(self) -> bool | None:
@@ -299,6 +343,16 @@ class SpotifyMediaPlayer(SpotifyEntity, MediaPlayerEntity):
             attrs["media_next_artist"] = data.next_artist
         if data.next_thumbnail:
             attrs["media_next_thumbnail"] = data.next_thumbnail
+        if self.devices.data:
+            attrs["source_devices"] = [
+                {
+                    "id": device.device_id,
+                    "name": _device_display_name(device),
+                    "type": getattr(device.device_type, "value", str(device.device_type)),
+                }
+                for device in self.devices.data
+                if device.device_id
+            ]
         parent = super().extra_state_attributes
         if isinstance(parent, dict):
             return {**parent, **attrs}
@@ -442,7 +496,7 @@ class SpotifyMediaPlayer(SpotifyEntity, MediaPlayerEntity):
     async def async_select_source(self, source: str) -> None:
         """Select playback device."""
         for device in self.devices.data:
-            if device.name == source:
+            if _device_matches_source(device, source):
                 if TYPE_CHECKING:
                     assert device.device_id is not None
                 await self.coordinator.client.transfer_playback(device.device_id)
