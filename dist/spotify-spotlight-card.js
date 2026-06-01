@@ -157,9 +157,8 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
     }
 
     /*
-     * .body is sized naturally (height: auto) so we can measure its true
-     * content height and apply a zoom via JS to fill the available panel space.
-     * transform-origin: top left keeps the zoom anchored to the top of the card.
+     * .body fills the card; .top grows to ~50% via flex. _rescale() temporarily
+     * sets height:auto to measure natural content, then restores 100% for zoom.
      */
     .body {
       position: relative;
@@ -168,7 +167,7 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
       flex-direction: column;
       gap: 1em;
       padding: 1.5em;
-      height: auto;
+      height: 100%;
       box-sizing: border-box;
       transform-origin: top left;
     }
@@ -246,12 +245,16 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
       gap: 1.25em;
       align-items: stretch;
       flex-wrap: wrap;
+      flex: 1 1 0;
+      min-height: 0;
     }
 
     .art {
       flex: 0 0 auto;
-      width: min(15em, 42vw);
+      height: 100%;
+      width: auto;
       aspect-ratio: 1;
+      max-width: 45%;
       border-radius: 1em;
       overflow: hidden;
       box-shadow: 0 1.5em 3.75em rgba(0, 0, 0, 0.55);
@@ -509,16 +512,15 @@ let SpotifySpotlightCard = class SpotifySpotlightCard extends i {
         const body = this.shadowRoot?.querySelector(".body");
         if (!body)
             return;
-        // Reset zoom to get true content height.
+        // Reset zoom and measure natural content height with height:auto
         body.style.zoom = "";
-        const available = this.clientHeight;
-        if (available <= 0)
-            return;
+        body.style.height = "auto";
         const natural = body.scrollHeight;
-        if (natural <= 0)
+        body.style.height = "100%";
+        const available = this.clientHeight;
+        if (available <= 0 || natural <= 0)
             return;
         const ratio = available / natural;
-        // Only scale down (don't scale up beyond 1:1 — let the card breathe on large screens).
         if (ratio < 1) {
             body.style.zoom = String(ratio);
         }
