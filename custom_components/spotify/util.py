@@ -5,18 +5,16 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import importlib
-
 import orjson
 from spotifyaio import (
     BasePlaylist,
     Image,
     Playlist,
-    PlaylistResponse,
     SpotifyClient,
     SpotifyConnectionError,
     SpotifyNotFoundError,
 )
+from spotifyaio.models import PlaylistResponse
 import yarl
 
 from .const import MEDIA_PLAYER_PREFIX
@@ -98,16 +96,6 @@ async def async_get_playlists_for_current_user_resilient(
 
     try:
         return PlaylistResponse.from_json(orjson.dumps(data).decode()).items
-    except Exception:
-        _LOGGER.debug(
-            "PlaylistResponse.from_json failed; trying spotifyaio.models.playlist",
-            exc_info=True,
-        )
-    try:
-        playlist_models = importlib.import_module("spotifyaio.models.playlist")
-        return playlist_models.PlaylistResponse.from_json(
-            orjson.dumps(data).decode()
-        ).items
     except Exception:
         _LOGGER.debug("Could not parse playlist list response", exc_info=True)
         return []
